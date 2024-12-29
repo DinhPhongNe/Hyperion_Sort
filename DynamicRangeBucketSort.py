@@ -20,27 +20,35 @@ from contextlib import contextmanager
 import pickle
 import os
 from datetime import datetime
+import threading
+from typing import Generator
+import multiprocessing as mp
+import random
 
+# Thêm logging chi tiết hơn [[2](https://cybersoft.edu.vn/ngay-4-nghe-thuat-toi-uu-hoa-khi-code-dat-dinh-cao-hoan-my/)]
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s - %(processName)s'
 )
 logger = logging.getLogger(__name__)
 
 class SortStrategy(Enum):
     AUTO = "auto"
-    PARALLEL = "parallel"
+    PARALLEL = "parallel" 
     MEMORY_EFFICIENT = "memory_efficient"
     HYBRID = "hybrid"
     ADAPTIVE = "adaptive"
+    STREAM = "stream" 
 
 class Algorithm(Enum):
     QUICKSORT = "quicksort"
     MERGESORT = "mergesort"
-    HEAPSORT = "heapsort"
+    HEAPSORT = "heapsort" 
     TIMSORT = "timsort"
+    INTROSORT = "introsort"
+    
 
-@dataclass
+@dataclass 
 class PerformanceMetrics:
     cpu_time: float = 0.0
     wall_time: float = 0.0
@@ -49,6 +57,8 @@ class PerformanceMetrics:
     cache_misses: int = 0
     thread_count: int = 0
     context_switches: int = 0
+    io_operations: int = 0
+    network_usage: float = 0.0
 
 @dataclass
 class SortStats:
@@ -85,6 +95,23 @@ class CacheManager:
             self.cache.pop(oldest, None)
         self.cache[key] = value
         self._access_history.append(key)
+
+class StreamProcessor:
+    def __init__(self, chunk_size: int = 1000):
+        self.chunk_size = chunk_size
+        self.buffer = deque(maxlen=chunk_size)
+        self._lock = threading.Lock()
+        
+    def process_stream(self, data_stream: Generator) -> Generator:
+        for item in data_stream:
+            with self._lock:
+                self.buffer.append(item)
+                if len(self.buffer) >= self.chunk_size:
+                    yield sorted(self.buffer)
+                    self.buffer.clear()
+        
+        if self.buffer:
+            yield sorted(self.buffer)
 
 class MetricsCollector:
     def __init__(self):
@@ -126,7 +153,8 @@ class EnhancedDynamicRangeBucketSort:
         chunk_size: Optional[int] = None,
         profile: bool = False,
         cache_size: int = 1000,
-        adaptive_threshold: float = 0.7
+        adaptive_threshold: float = 0.7,
+        stream_mode: bool = False
     ):
         self.strategy = strategy
         self.profile = profile
@@ -135,7 +163,137 @@ class EnhancedDynamicRangeBucketSort:
         self.cache = CacheManager(cache_size)
         self.metrics = MetricsCollector()
         self.adaptive_threshold = adaptive_threshold
+        self.stream_mode = stream_mode
+        self.stream_processor = StreamProcessor() if stream_mode else None
         self._setup_logging()
+        
+    def _introsort(self, arr: npt.NDArray, max_depth: Optional[int] = None) -> npt.NDArray:
+        if max_depth is None:
+            max_depth = 2 * int(math.log2(len(arr)))
+            
+        if len(arr) <= 16:
+            return self._insertion_sort(arr)
+        elif max_depth == 0:
+            return self._heapsort(arr)
+        else:
+            pivot = self._ninther(arr)
+            left = arr[arr < pivot]
+            middle = arr[arr == pivot]
+            right = arr[arr > pivot]
+            
+            return np.concatenate([
+                self._introsort(left, max_depth - 1),
+                middle,
+                self._introsort(right, max_depth - 1)
+            ])
+    
+    def _ninther(self, arr: npt.NDArray) -> float:
+        """Improved pivot selection using ninther method"""
+        if len(arr) < 9:
+            return np.median(arr)
+            
+        thirds = len(arr) // 3
+        medians = [
+            np.median([arr[i], arr[i + thirds], arr[i + 2*thirds]])
+            for i in range(3)
+        ]
+        return np.median(medians)
+        
+    def _insertion_sort(self, arr: npt.NDArray) -> npt.NDArray:
+        """Optimized insertion sort for small arrays"""
+        for i in range(1, len(arr)):
+            key = arr[i]
+            j = i - 1
+            while j >= 0 and arr[j] > key:
+                arr[j + 1] = arr[j]
+                j -= 1
+            arr[j + 1] = key
+        return arr
+        
+    def _heapsort(self, arr: npt.NDArray) -> npt.NDArray:
+        """Implementation of heapsort"""
+        def heapify(n: int, i: int):
+            largest = i
+            left = 2 * i + 1
+            right = 2 * i + 2
+
+            if left < n and arr[left] > arr[largest]:
+                largest = left
+
+            if right < n and arr[right] > arr[largest]:
+                largest = right
+
+            if largest != i:
+                arr[i], arr[largest] = arr[largest], arr[i]
+                heapify(n, largest)
+
+        n = len(arr)
+        for i in range(n // 2 - 1, -1, -1):
+            heapify(n, i)
+
+        for i in range(n - 1, 0, -1):
+            arr[0], arr[i] = arr[i], arr[0]
+            heapify(i, 0)
+            
+        return arr
+
+    def _stream_sort(self, data_stream: Generator) -> Generator:
+        """New method for handling streaming data"""
+        return self.stream_processor.process_stream(data_stream)
+
+    def sort(
+        self, 
+        arr: Union[List[float], npt.NDArray, Generator],
+        stream: bool = False
+    ) -> Union[Tuple[npt.NDArray, SortStats], Generator]:
+        self.start_time = time.perf_counter()
+        self.logger.info("Starting sort operation...")
+        
+        if stream or isinstance(arr, Generator):
+            return self._stream_sort(arr)
+            
+        if self.profile:
+            profiler = cProfile.Profile()
+            profiler.enable()
+
+        try:
+            if isinstance(arr, list):
+                arr = np.array(arr, dtype=np.float64)
+                
+            strategy = (
+                self._choose_optimal_strategy(arr)
+                if self.strategy == SortStrategy.AUTO
+                else self.strategy
+            )
+            
+            self.logger.info(f"Selected strategy: {strategy.value}")
+            
+            with performance_tracker():
+                if strategy == SortStrategy.MEMORY_EFFICIENT:
+                    result = self._memory_efficient_sort(arr)
+                elif strategy == SortStrategy.HYBRID:
+                    result = (self._hybrid_sort(arr),
+                             self._calculate_stats(arr, "hybrid", Algorithm.INTROSORT.value))
+                elif strategy == SortStrategy.ADAPTIVE:
+                    result = self._adaptive_sort(arr)
+                elif strategy == SortStrategy.STREAM:
+                    return self._stream_sort(arr)
+                else:
+                    result = self._parallel_sort(arr)
+                    
+            if self.profile:
+                profiler.disable()
+                s = io.StringIO()
+                ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+                ps.print_stats()
+                self.logger.debug(f"Profile results:\n{s.getvalue()}")
+                
+            self.logger.info("Sort operation completed successfully")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error during sorting: {e}", exc_info=True)
+            return arr, self._calculate_stats(arr, "failed", "none")
         
     def _setup_logging(self):
         self.logger = logging.getLogger(f"{__name__}.{id(self)}")
@@ -506,13 +664,28 @@ if __name__ == "__main__":
         adaptive_threshold=0.8
     )
     
-    test_sizes = [100_000, 1_000_000, 10_000_000, 100_000_000]
+    test_sizes = [100_000, 1_000_000, 10_000_000]
     benchmark_results = benchmark(
         sorter=sorter,
         sizes=test_sizes,
         runs=3,
         save_results=True
     )
+    def data_generator():
+        for i in range(1000000):
+            yield np.random.randint(0, 1000)
+    
+    sorter = EnhancedDynamicRangeBucketSort(
+        strategy=SortStrategy.STREAM,
+        profile=True,
+        cache_size=2000,
+        adaptive_threshold=0.8,
+        stream_mode=True
+    )
+    
+    for sorted_chunk in sorter.sort(data_generator(), stream=True):
+        print(f"Sorted chunk size: {len(sorted_chunk)}")
+        
     
     print("\n🌟 Kết quả tổng quan:")
     print(f"📊 Tổng số lần chạy: {benchmark_results['summary']['total_runs']}")
