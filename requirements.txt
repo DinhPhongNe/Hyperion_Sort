@@ -1,8 +1,12 @@
 numpy
-pandas  
-scikit-learn 
-psutil 
-lz4 
+pandas
+scikit-learn
+psutil
+lz4
 scipy
 tensorflow
 numba
+joblib
+pytest
+matplotlib
+seaborn
