@@ -341,8 +341,7 @@ class EnhancedHyperionSort:
         self.metrics = MetricsCollector()
         self._setup_logging(log_level)
         self.start_time = time.perf_counter()
-        self.stream_processor = StreamProcessor(
-            chunk_size=self.chunk_size or 1000)
+        self.stream_processor = StreamProcessor(chunk_size=self.chunk_size or 1000)
         self.use_ml_prediction = use_ml_prediction
         self.ml_model = self._train_ml_model() if use_ml_prediction else None
         self.compression_threshold = compression_threshold
@@ -368,35 +367,115 @@ class EnhancedHyperionSort:
             'block_stats': {'splits': 0, 'merges': 0}
         }
 
+
     def _train_ml_model(self):
-        np.random.seed(42)
-        n_samples = 1000
-        data = np.random.rand(n_samples, 6)
-        labels = np.zeros(n_samples)
-        for i in range(n_samples):
-          if data[i, 0] < 0.3:
-             labels[i] = 1
-          elif data[i, 1] > 0.7:
-              labels[i] = 2
-          elif data[i, 2] > 0.6:
-              labels[i] = 3
-          elif data[i, 3] > 0.8:
+         
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Benchmark_results/benchmark_train_{timestamp}.pkl"
+    
+        train_file_names = [filename, f"benchmark_train_{timestamp}.pkl"]
+        
+        if not any(os.path.exists(train_file) for train_file in train_file_names) and not os.path.exists("Benchmark_results"):
+          self.logger.warning("Cannot locate training data, using random generator")
+          np.random.seed(42)
+          n_samples = 1000
+          data = np.random.rand(n_samples, 6)
+          labels = np.zeros(n_samples)
+          for i in range(n_samples):
+            if data[i,0] < 0.3:
+              labels[i] = 1
+            elif data[i, 1] > 0.7:
+               labels[i] = 2
+            elif data[i, 2] > 0.6:
+               labels[i] = 3
+            elif data[i, 3] > 0.8:
                labels[i] = 4
-          elif data[i, 4] > 0.9:
-               labels[i] = 5
-          else:
-             labels[i] = 0
+            elif data[i, 4] > 0.9:
+              labels[i] = 5
+            else :
+                labels[i] = 0
+        
+          model = tf.keras.Sequential([
+           tf.keras.layers.Input(shape=(6,)),
+              tf.keras.layers.Dense(128, activation='relu'),
+           tf.keras.layers.Dense(64, activation='relu'),
+           tf.keras.layers.Dense(6)
+           ])
+          model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+
+          model.fit(data, labels, epochs = 10, verbose=0)
+          return model
+        
+        train_data_set = []
+        if os.path.exists("Benchmark_results"):
+             self.logger.info("Using all benchmark data from Benchmark_results")
+             for train_file in os.listdir("Benchmark_results"):
+                if "benchmark_train" in train_file :
+                 try:
+                      file_path = os.path.join("Benchmark_results",train_file)
+                      with open(file_path, 'rb') as f:
+                           temp_train_data_set = pickle.load(f)
+                           train_data_set = train_data_set + temp_train_data_set
+                           self.logger.info(f"Training data was located: {file_path}")
+                 except Exception as e :
+                      self.logger.warning(f"Unable to read file {train_file} with error {e}.")
+        if not train_data_set:
+               self.logger.warning(f"All training data file are missing using default list: {train_file_names}")
+               np.random.seed(42)
+               n_samples = 1000
+               data = np.random.rand(n_samples, 6)
+               labels = np.zeros(n_samples)
+               for i in range(n_samples):
+                  if data[i,0] < 0.3:
+                     labels[i] = 1
+                  elif data[i, 1] > 0.7:
+                      labels[i] = 2
+                  elif data[i, 2] > 0.6:
+                      labels[i] = 3
+                  elif data[i, 3] > 0.8:
+                       labels[i] = 4
+                  elif data[i, 4] > 0.9:
+                       labels[i] = 5
+                  else :
+                       labels[i] = 0
+        
+               model = tf.keras.Sequential([
+                  tf.keras.layers.Input(shape=(6,)),
+                     tf.keras.layers.Dense(128, activation='relu'),
+                 tf.keras.layers.Dense(64, activation='relu'),
+                  tf.keras.layers.Dense(6)
+               ])
+               model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True))
+               model.fit(data, labels, epochs = 10, verbose=0)
+               return model;
+        
+        labels = []
+        data = []
+
+        for record in train_data_set:
+           labels.append([
+                SortStrategy(record['strategy']).value, 
+            ])
+           data.append([
+                record['std_dev'],
+                record['range_size'],
+               record['is_nearly_sorted'],
+               record['n'],
+                record['data_skewness'],
+               record['data_kurtosis']
+            ])
+        data = np.array(data)
+        labels = np.array(labels)
 
         model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(6,)),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dense(6)
+              tf.keras.layers.Input(shape=(6,)),
+              tf.keras.layers.Dense(128, activation='tanh'),
+              tf.keras.layers.Dense(64, activation='tanh'),
+              tf.keras.layers.Dense(6, activation='softmax')
         ])
-        model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=True))
+        model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False))
 
-        model.fit(data, labels, epochs=10, verbose=0)
+        model.fit(data, labels, epochs = 10, verbose=0)
         return model
 
     def _predict_strategy(self, arr: npt.NDArray) -> SortStrategy:
@@ -671,48 +750,56 @@ class EnhancedHyperionSort:
        return await loop.run_in_executor(None, partial(self._read_chunk_sync, file_path, offset, size, dtype))
 
     def _read_chunk_sync(self, file_path: str, offset: int, size: int, dtype: np.dtype) -> npt.NDArray:
-        with open(file_path, 'rb') as file:
-          file.seek(offset)
-          data = file.read(size - (size % dtype.itemsize))
-          return np.frombuffer(data, dtype=dtype)
+      with open(file_path, 'rb') as file:
+          try:
+              file.seek(offset)
+              data = file.read(size - (size % dtype.itemsize))
+              return np.frombuffer(data, dtype=dtype)
+          except Exception as e:
+               self.logger.warning(f"Unable to read chunk from the file {file_path} with code {e}")
+               return np.array([], dtype = dtype)
 
     async def _external_sort(self, arr: npt.NDArray) -> npt.NDArray:
       file_path = "temp_data.bin"
       dtype = arr.dtype
       arr.tofile(file_path)
-      chunk_size = self._adaptive_chunk_size(len(arr), arr.itemsize)
+      chunk_size =  self._adaptive_chunk_size(len(arr), arr.itemsize)
       num_chunks = math.ceil(len(arr) * arr.itemsize / chunk_size)
-
+      
       with open(file_path, 'wb') as file:
            file.write(b'\0' * arr.nbytes)
-
+      
       with open(file_path, "r+b") as file:
            mem = mmap.mmap(file.fileno(), 0)
            mem[:arr.nbytes] = arr.tobytes()
-
-      sorted_chunks = []
-      tasks = []
-      for i in range(num_chunks):
-          offset = i * chunk_size
-          size = min(chunk_size, len(arr) * arr.itemsize - offset)
-          task = self._read_chunk(file_path, offset, size, dtype)
-          tasks.append(task)
-
-      chunks = await asyncio.gather(*tasks)
-
-      with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-           sorted_chunks = list(executor.map(np.sort, chunks))
-
-      if len(sorted_chunks) == 0:
-           return np.array([])
-      result = self._multi_way_merge(sorted_chunks)
+      
+           sorted_chunks = []
+           tasks = []
+           for i in range(num_chunks):
+                offset = i * chunk_size
+                size = min(chunk_size, len(arr) * arr.itemsize - offset)
+                
+                task = self._read_chunk(file_path, offset, size, dtype)
+                tasks.append(task)
+           
+           chunks = await asyncio.gather(*tasks)
+    
+           with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+               sorted_chunks = list(executor.map(np.sort, chunks))
+              
+           if len(sorted_chunks) == 0:
+                 return np.array([])
+           result = self._multi_way_merge(sorted_chunks)
+      
       try:
-        os.remove(file_path)
-      except:
-        pass
-      mem.close()
+          mem.close()
+          file.close()
+          os.unlink(file_path)
+      except Exception as e:
+          self.logger.error(f"Unable to close or unlink the file: {file_path}, error {e}")
       gc.collect()
       return result
+  
     
     def _multi_way_merge(self, sorted_chunks: List[npt.NDArray]) -> npt.NDArray:
         merged = []
@@ -1736,7 +1823,7 @@ class EnhancedHyperionSort:
         if self.data_type == "number":
             return f"{len(arr)}_{arr.dtype}_{arr.std():.2f}"
         else:
-             return f"{len(arr)}_{arr.dtype}_non_number"
+             return f"{len(arr)}_{arr.dtype}_{time.time()}_non_number"
     
     def _cache_historical_runs(self, key:str, strategy: SortStrategy):
         self.historical_runs[key] = strategy
@@ -1771,6 +1858,35 @@ class EnhancedHyperionSort:
         for i, count in enumerate(counts):
            sorted_arr.extend([i+min_val] * count)
         return np.array(sorted_arr)
+    
+    def _extract_features(self, arr: npt.NDArray) -> dict:     
+        n = len(arr)
+        sample_size = min(1000, n)
+        sample = arr[np.random.choice(n, sample_size, replace=False)]
+
+        if self.data_type != "number":
+            is_nearly_sorted = False
+        else:
+            is_nearly_sorted = np.sum(np.diff(sample) < 0) < len(sample) * 0.1
+            
+        std_dev = np.std(sample)
+        range_size = np.ptp(sample)
+        data_skewness = skew(sample)
+        data_kurtosis = kurtosis(sample)
+       
+        
+        return {
+            "std_dev": std_dev,
+            "range_size": range_size,
+            "is_nearly_sorted": is_nearly_sorted,
+            "n" : n,
+            "data_skewness": data_skewness,
+           "data_kurtosis" : data_kurtosis,
+          "data_type" : self.data_type,
+          "itemsize" : arr.itemsize
+
+        }
+  
 
 
 def benchmark(
@@ -1780,12 +1896,12 @@ def benchmark(
     save_results: bool = True
 ) -> Dict[str, Any]:
     results = []
+    training_data = []
 
     for size in sizes:
         size_results = []
         for run in range(runs):
             logger.info(f"\nBenchmarking với {size:,} phần tử (Run {run + 1}/{runs}):")
-
             if run == 0:
                 data = np.random.randint(0, size * 10, size=size)
             elif run == 1:
@@ -1804,6 +1920,7 @@ def benchmark(
                     clusters.append(cluster)
 
                 data = np.concatenate(clusters).astype(np.int32)
+            features = sorter._extract_features(arr=data)
             
             sorted_arr, metrics = asyncio.run(sorter.sort(data))
             
@@ -1837,7 +1954,6 @@ def benchmark(
             if metrics.compression_ratio < 1.0:
               print(f"🗜️ Compression ratio: {metrics.compression_ratio:.2f}")
             
-
             result_data = {
                 'size': size,
                 'run': run,
@@ -1851,8 +1967,10 @@ def benchmark(
                 'is_sorted': is_sorted,
                 'compression_ratio': metrics.compression_ratio,
                 'fallback_strategy' : metrics.fallback_strategy,
-                 'disk_io' : metrics.performance.disk_io/(1024*1024)
+                'disk_io' : metrics.performance.disk_io/(1024*1024),
+                 **features
             }
+            training_data.append(result_data)
 
             size_results.append(result_data)
 
@@ -1876,6 +1994,12 @@ def benchmark(
             pickle.dump(results, f)
 
         print(f"\n💾 Đã lưu kết quả vào: {filename}")
+        
+        training_file = f"benchmark_train_{timestamp}.pkl"
+        with open(training_file, 'wb') as f:
+              pickle.dump(training_data, f)
+        print(f"\n💾 Training data is saved into: {training_file}")
+
 
     return {
         'results': results,
@@ -1884,9 +2008,9 @@ def benchmark(
             'sizes_tested': sizes,
             'best_performance': min(results, key=lambda x: x['time']),
             'worst_performance': max(results, key=lambda x: x['time'])
-        }
+        },
+        'training_data': training_data
     }
-
 def create_sort_handler(strategy: str, **kwargs):
     from HyperionSort import EnhancedHyperionSort 
     if is_distributed_env():
