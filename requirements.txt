@@ -10,3 +10,5 @@ joblib
 pytest
 matplotlib
 seaborn
+dask
+ray
