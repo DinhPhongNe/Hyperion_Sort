@@ -10,39 +10,29 @@ This repository contains an enhanced and dynamic implementation of various sorti
 *   **Multi-threading and Parallel Processing:**
     *   Leverages `ThreadPoolExecutor` and `ProcessPoolExecutor` to maximize CPU utilization, utilizing available cores for parallel sorting tasks.
     *   Dynamic load balancing mechanism for better resource usage.
-
 *   **Streaming Data Support:**
     *   Efficiently sorts data streams without loading them entirely in memory using our custom `StreamProcessor`, with linear regression to dynamically change chunk sizes.
     *   Supports incremental sorting that saves intermediate results as file, with adaptive chunk size mechanism.
-
 *   **Memory Management:**
     *   Employs block management strategies for large datasets, splitting them into smaller blocks, merged after processing.
     *   Adaptive caching mechanism for performance optimizations.
-    *    Memory-efficient techniques to conserve memory usage during sort.
-
+    *   Memory-efficient techniques to conserve memory usage during sort.
 *   **Machine Learning Prediction:**
     *   Integration of TensorFlow to predict the optimal sorting strategy based on the data characteristics using a trained ML model.
     *   A feedback loop mechanism to improve model prediction over time.
-
 *   **Data Validation:**
-    *   Performs data validation before start sort to ensure data integrity by checking data type and if it has infinity or NaN  values.
-    *   Supports different data types: number (integers, floats), string (with length comparison), object (any data type, based of first key found).
-
+    *   Performs data validation before start sort to ensure data integrity by checking data type and if it has infinity or NaN values.
+    *   Supports different data types: number (integers, floats), string (with length comparison), object (any data type, based on the first key found).
 *   **Advanced Techniques:**
     *   Compression mechanisms for both data reduction and speed, by compressing with LZ4 algorithms.
-    *    Adaptive chunk sizing to use memory effectively and prevent bottle necks.
-    *   A deduplication mode using Numpy to remove duplicate entries, making sort more efficient.
-    *   Supports micro-sort, hybrid sort, partition sort, and many other advanced sorting techniques.
-    *   Support for lazy-sort, will extract the K elements based from specified value and position.
-
-*  **Metrics and Benchmarking:**
-    * Provides details output including execution times, CPU usage data, memory consumption, and other useful metrics.
-    * Includes benchmark module to test various sorting parameters with different data distributions.
-    * Real time performance analysis including CPU, memory and predictive metrics to enhance decision making.
-
+    *   Adaptive chunk sizing to use memory effectively and prevent bottlenecks.
+*   **Metrics and Benchmarking:**
+    *   Provides detailed output including execution times, CPU usage data, memory consumption, and other useful metrics.
+    *   Includes benchmark module to test various sorting parameters with different data distributions.
+    *   Real-time performance analysis including CPU, memory, and predictive metrics to enhance decision-making.
 *   **Logging & Monitoring:**
-    *   Detailed logging to track execution flow, strategy selections, and performance data through python's logging module.
-    *   Real-time performance dashboard included, shows CPU, memory and other metrics.
+    *   Detailed logging to track execution flow, strategy selections, and performance data through Python's logging module.
+    *   Real-time performance dashboard included, shows CPU, memory, and other metrics.
 
 ## Usage
 
@@ -166,7 +156,3 @@ The `EnhancedHyperionSort` can be configured by passing the arguments during its
 *   Implement more sorting algorithms.
 *   Refactor code base to improve stability.
 *   Improve documentation by code annotation.
-
-## Contributing
-
-We welcome contributions! Please feel free to submit pull requests or open issues to report any bugs or suggest enhancements.

@@ -1,4 +1,3 @@
-from typing import List, Union, Optional, Tuple, Dict, Any, Callable, Generator
 import numpy as np
 import numpy.typing as npt
 from dataclasses import dataclass, field
@@ -26,7 +25,11 @@ import random
 from sklearn.cluster import MiniBatchKMeans, DBSCAN
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
 from scipy.stats import skew, kurtosis, entropy
 from lz4.frame import compress, decompress
 import tensorflow as tf
@@ -39,8 +42,15 @@ import mmap
 import socket
 import dask.array as da
 import ray
+from tqdm import tqdm
+import xgboost as xgb
+from typing import Dict, Any, List, Union, Optional, Tuple, Callable, Generator
+import lightgbm as lgb
+from catboost import CatBoostClassifier
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+warnings.filterwarnings('ignore', category=UserWarning, module='xgboost')
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +58,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@dataclass
 class SortStrategy(Enum):
     AUTO = "auto"
     PARALLEL = "parallel"
@@ -67,6 +78,11 @@ class SortStrategy(Enum):
     HYBRID_COMPRESSION_SORT = "hybrid_compression_sort"
     HOT_SWAP_SORT = "hot_swap_sort"
     STREAMING_HYBRID_SORT = "streaming_hybrid_sort"
+
+    @classmethod
+    def from_str(cls, strategy: str):
+        return cls[strategy.upper()]
+
 
 
 class Algorithm(Enum):
@@ -160,6 +176,20 @@ class BlockManager:
 
         return result
 
+def tune_xgboost_model(X_train, y_train):
+    param_grid = {
+        'learning_rate': [0.01, 0.1, 0.2],
+        'max_depth': [3, 5, 7],
+        'n_estimators': [50, 100, 200],
+        'subsample': [0.8, 1.0],
+        'colsample_bytree': [0.8, 1.0]
+    }
+
+    model = xgb.XGBClassifier(objective='multi:softmax', use_label_encoder=False)
+    grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, scoring='accuracy', verbose=1)
+    grid_search.fit(X_train, y_train)
+
+    return grid_search.best_estimator_
 
 @dataclass
 class SortStats:
@@ -344,7 +374,8 @@ class EnhancedHyperionSort:
         self.stream_processor = StreamProcessor(
             chunk_size=self.chunk_size or 1000)
         self.use_ml_prediction = use_ml_prediction
-        self.ml_model = self._train_ml_model(self) if use_ml_prediction else None
+        self.ml_model_path = "ml_model.pkl"
+        self.models = self._load_ml_models() if use_ml_prediction else []
         self.compression_threshold = compression_threshold
         self.fallback_strategy = Algorithm.MERGESORT
         self.external_sort_threshold = external_sort_threshold
@@ -359,7 +390,7 @@ class EnhancedHyperionSort:
         self.comparator = self._get_default_comparator()
         self.cpu_load_data = deque(maxlen=10)
         self.load_balancer_enabled = True
-
+        
     def _setup_metrics(self) -> Dict[str, Any]:
         return {
             'sort_times': [],
@@ -379,145 +410,239 @@ class EnhancedHyperionSort:
         data_type = feature_sample.get("data_type", "number")
 
         if data_type != "number":
-            return SortStrategy.ADAPTIVE.name
+            return SortStrategy.ADAPTIVE.value.upper()
         if data_skewness > 2 or data_kurtosis > 5:
-            return SortStrategy.BUCKET_SORT.name
+            return SortStrategy.BUCKET_SORT.value.upper()
 
         if is_nearly_sorted:
-            return SortStrategy.ADAPTIVE.name
+            return SortStrategy.ADAPTIVE.value.upper()
 
         if n > 1_000_000:
-            return SortStrategy.PARALLEL.name
+            return SortStrategy.PARALLEL.value.upper()
 
         if std_dev < range_size / 100:
-            return SortStrategy.HYBRID.name
+            return SortStrategy.HYBRID.value.upper()
 
         if n > 100_000:
-            return SortStrategy.EXTERNAL_SORT.name
+            return SortStrategy.EXTERNAL_SORT.value.upper()
 
         if n > 10_000:
-            return SortStrategy.SEQUENTIAL_SORT.name
+            return SortStrategy.SEQUENTIAL_SORT.value.upper()
 
         if n > 1000:
-            return SortStrategy.MICRO_SORT.name
-        return SortStrategy.ADAPTIVE.name
-    
-    @staticmethod
-    def _train_ml_model(self,training_data_set= None,  n_samples_train= 100000, **kwargs )-> tf.keras.Model:
-         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"benchmark_results/benchmark_train_{timestamp}.pkl"
-    
-        train_file_names = [filename, f"benchmark_train_{timestamp}.pkl"]
-        
-        if not any(os.path.exists(train_file) for train_file in train_file_names) and not os.path.exists("benchmark_results"):
-          self.logger.warning("Cannot locate training data, using random generator")
-          np.random.seed(42)
-          data = np.random.rand(n_samples_train, 6)
-          labels = np.zeros(n_samples_train)
-          train_data_set = []
+            return SortStrategy.MICRO_SORT.value.upper()
 
-          for i in range(n_samples_train):
-             feature_sample = {
-                  'std_dev': data[i, 0],
-                 'range_size': data[i, 1],
-                  'is_nearly_sorted': data[i, 2] > 0.5,
-                     'n' : int(10**data[i,3] * 5 + 1000),
-                     'data_skewness' : data[i,4] * 5 - 2.5,
-                      'data_kurtosis' : data[i,5] * 10,
-                    'data_type' : "number"
-                 }
+        return SortStrategy.ADAPTIVE.value.upper()
 
-             strategy_name_to_id = {strategy.name: idx for idx, strategy in enumerate(SortStrategy)}
-             strategy_value = strategy_name_to_id[EnhancedHyperionSort.train_predict_label(feature_sample)]
-             train_data_set.append({**feature_sample,  "strategy":strategy_value })
-            
-
-          labels = []
-          data = []
-
-          for record in train_data_set:
-               labels.append([record['strategy']])
-               data.append([
-                  record['std_dev'],
-                  record['range_size'],
-                   float(record['is_nearly_sorted']),
-                  record['n'],
-                    record['data_skewness'],
-                 record['data_kurtosis']
-                  ])
-          data = np.array(data, dtype=np.float64)
-          labels = np.array(labels, dtype = np.int64)
-        
-
-          scaler = StandardScaler()
-          data = scaler.fit_transform(data)
-
-          model = tf.keras.Sequential([
-              tf.keras.layers.Input(shape=(6,)),
-             tf.keras.layers.Dense(128, activation='relu'),
-               tf.keras.layers.Dense(64, activation='relu'),
-            tf.keras.layers.Dense(len(SortStrategy), activation='softmax')
-           ])
-
-          model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False), metrics=['accuracy'])
-          model.fit(data, labels, epochs = 10, verbose=0)
-          return model
-
+    def _load_ml_models(self):
+        if os.path.exists(self.ml_model_path):
+            try:
+                with open(self.ml_model_path, "rb") as f:
+                    loaded_data = pickle.load(f)
+                    if "models" in loaded_data:
+                        models = loaded_data["models"]
+                        self.logger.info("Loaded ML models from disk.")
+                        return models
+                    else:
+                        self.logger.warning("No 'models' key found in loaded data. Training new models.")
+                        return self._train_ml_models()
+            except Exception as e:
+                self.logger.warning(f"Error loading models from disk: {e}. Training new models.")
+                return self._train_ml_models()
         else:
+            self.logger.info("ML models not found on disk. Training new models.")
+            return self._train_ml_models()
 
-            if os.path.exists("benchmark_results"):
-                  self.logger.info("Using all benchmark data from Benchmark_results folder to be added in this model dataset")
-                  for train_file in os.listdir("benchmark_results"):
-                        if "benchmark_train" in train_file :
-                           try:
-                              file_path = os.path.join("benchmark_results",train_file)
-                              with open(file_path, 'rb') as f:
-                                         temp_train_data_set = pickle.load(f)
-                                         train_data_set = train_data_set + temp_train_data_set
+    def _save_ml_models(self, models):
+        try:
+            with open(self.ml_model_path, "wb") as f:
+                pickle.dump({"models": models}, f)
+            self.logger.info("Saved ML models to disk.")
+        except Exception as e:
+            self.logger.error(f"Error saving models to disk: {e}")
 
-                                         self.logger.info(f"Training data was located: {file_path}")
-                           except Exception as e :
-                                 self.logger.warning(f"Unable to read file {train_file} from `benchmark_results`, using default data generation, Error : {e}.")
-            else :
+    def _tune_xgboost_model(self, X_train, y_train):
+        param_grid = {
+            'learning_rate': [0.01, 0.1, 0.2],
+            'max_depth': [3, 5, 7],
+            'n_estimators': [50, 100, 200],
+            'subsample': [0.8, 1.0],
+            'colsample_bytree': [0.8, 1.0]
+        }
 
-                  self.logger.warning(f"Unable to find benchmark results for train data using the default path. Using test generation model with default configuration. File path: Benchmark_results, available names {os.listdir()}. If you want the training use generated sets as output with filename that starts with `benchmark_train` with the proper format and it will pick those sets in training model process.")
-                  train_data_set = training_data_set
-        
+        model = xgb.XGBClassifier(objective='multi:softmax', use_label_encoder=False)
+        grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, scoring='accuracy', verbose=1)
+        grid_search.fit(X_train, y_train)
+
+        return grid_search.best_estimator_
+    
+    def _train_ml_models(self, training_data_set=None, n_samples_train=100000, **kwargs):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Benchmark_results/benchmark_train_{timestamp}.pkl"
+
+        train_file_names = [filename, f"benchmark_train_{timestamp}.pkl"]
+
+        unique_strategies = sorted(strategy.name for strategy in SortStrategy)
+        strategy_mapping = {name: idx for idx, name in enumerate(unique_strategies)}
+
+        if training_data_set is None:
+            training_data_set = []
+        benchmark_folder = "Benchmark_results"
+        if not os.path.exists(benchmark_folder):
+            self.logger.warning(
+                "'Benchmark_results' folder not found. "
+                "Cannot train ML models without benchmark data."
+            )
+            return []
+
+        benchmark_files = [
+            f for f in os.listdir(benchmark_folder)
+            if (f.startswith("benchmark_results_") or f.startswith("benchmark_train_")) and f.endswith(".pkl")
+        ]
+
+        if not benchmark_files:
+            self.logger.warning(
+                "No benchmark result files found in 'Benchmark_results' folder. "
+                "Cannot train ML models without benchmark data."
+            )
+            return []
+
+        loaded_files_count = 0
+        skipped_files_count = 0
+        skipped_records_count = 0
+
+        for file in tqdm(benchmark_files, desc="Loading benchmark data", leave=False):
+            try:
+                file_path = os.path.join(benchmark_folder, file)
+                with open(file_path, 'rb') as f:
+                    benchmark_data = pickle.load(f)
+
+                    if isinstance(benchmark_data, list):
+                        training_data_set.extend(benchmark_data)
+                        loaded_files_count += 1
+                    else:
+                        skipped_files_count += 1
+
+            except Exception as e:
+                self.logger.warning(f"Error loading {file_path}: {e}")
+
+        if loaded_files_count > 0:
+            self.logger.info(f"Loaded benchmark data from {loaded_files_count} files.")
+        if skipped_files_count > 0:
+            self.logger.warning(f"Skipped {skipped_files_count} files because they did not contain a list.")
+
+        if not training_data_set:
+            self.logger.error("No training data available after loading benchmark results.")
+            return []
+
         labels = []
         data = []
+        used_strategies = set()
 
-        for record in train_data_set:
-          labels.append([record.get('strategy', SortStrategy.ADAPTIVE.value)])
-          data.append([
-                record.get('std_dev',0.0),
-                 record.get('range_size',1.0),
-              float(record.get('is_nearly_sorted',False)),
-                record.get('n',1000.0),
-              record.get('data_skewness',0.0),
-               record.get('data_kurtosis', 0.0)
-             ])
+        for record in tqdm(training_data_set, desc="Preparing training data", leave=False):
+            try:
+                strategy_str = record.get('strategy', SortStrategy.ADAPTIVE.value)
+                if isinstance(strategy_str, SortStrategy):
+                    strategy_str = strategy_str.value
 
+                strategy_name = SortStrategy.from_str(strategy_str).name
+                if strategy_name in strategy_mapping:
+                    labels.append(strategy_mapping[strategy_name])
+                    used_strategies.add(strategy_name)
+                    data.append([
+                        record.get('std_dev', 0.0),
+                        record.get('range_size', 1.0),
+                        float(record.get('is_nearly_sorted', False)),
+                        record.get('n', 1000.0),
+                        record.get('data_skewness', 0.0),
+                        record.get('data_kurtosis', 0.0)
+                    ])
+            except Exception as e:
+                skipped_records_count += 1
+
+        if skipped_records_count > 0:
+            self.logger.warning(f"Skipped {skipped_records_count} records due to errors.")
+
+        if len(data) < 2:
+            raise ValueError(f"Not enough training data: {len(data)} samples")
 
         data = np.array(data, dtype=np.float64)
-        labels = np.array(labels)
-        
+        labels = np.array(labels, dtype=np.int64)
+
+        unique_labels = sorted(set(labels))
+        label_mapping = {old_label: new_label for new_label, old_label in enumerate(unique_labels)}
+        labels = np.array([label_mapping[label] for label in labels])
+
         scaler = StandardScaler()
         data = scaler.fit_transform(data)
 
-        model = tf.keras.Sequential([
-              tf.keras.layers.Input(shape=(6,)),
-               tf.keras.layers.Dense(128, activation='tanh'),
-               tf.keras.layers.Dense(64, activation='tanh'),
-             tf.keras.layers.Dense(len(SortStrategy), activation = 'softmax')
-           ])
-        model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False), metrics=['accuracy'])
+        X_train, X_val, y_train, y_val = train_test_split(data, labels, test_size=0.2, random_state=42)
 
-        model.fit(data, labels, epochs = 10, verbose = 0)
-        return model
+        models = []
+
+        xgb_model = xgb.XGBClassifier(
+            objective='multi:softmax',
+            num_class=len(set(labels)),
+            use_label_encoder=False,
+            learning_rate=0.1,
+            max_depth=5,
+            n_estimators=100,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
+            early_stopping_rounds=10,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1
+        )
+        xgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        models.append(xgb_model)
+
+        lgb_model = lgb.LGBMClassifier(
+            objective='multiclass',
+            num_class=len(set(labels)),
+            learning_rate=0.1,
+            max_depth=5,
+            n_estimators=100,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1,
+            verbose=-1
+        )
+        lgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
+        models.append(lgb_model)
+
+        cat_model = CatBoostClassifier(
+            iterations=100,
+            learning_rate=0.1,
+            depth=5,
+            loss_function='MultiClass',
+            verbose=False
+        )
+        cat_model.fit(X_train, y_train, eval_set=(X_val, y_val))
+        models.append(cat_model)
+
+        rf_model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1
+        )
+        rf_model.fit(X_train, y_train)
+        models.append(rf_model)
+
+        for model in models:
+            y_pred = model.predict(X_val)
+            accuracy = accuracy_score(y_val, y_pred)
+            self.logger.info(f"Model accuracy: {accuracy:.4f}")
+
+        self._save_ml_models(models)
+
+        return models
 
     def _predict_strategy(self, arr: npt.NDArray) -> SortStrategy:
-        if not self.ml_model:
+        if not self.models:
             return self._choose_optimal_strategy(arr)
 
         n = len(arr)
@@ -533,12 +658,11 @@ class EnhancedHyperionSort:
         range_size = np.ptp(sample)
         data_skewness = skew(sample)
         data_kurtosis = kurtosis(sample)
+        features = np.array([std_dev, range_size, is_nearly_sorted, n, data_skewness, data_kurtosis]).reshape(1, -1)
 
-        features = np.array([std_dev, range_size, is_nearly_sorted, len(arr), 
-                            data_skewness, data_kurtosis]).reshape(1, -1)
-        
-        predicted_idx = np.argmax(self.ml_model.predict(features, verbose=0)[0])
-        
+        predictions = [int(model.predict(features)[0]) for model in self.models]
+        predicted_strategy_idx = max(set(predictions), key=predictions.count)
+
         strategy_mapping = {
             0: SortStrategy.ADAPTIVE,
             1: SortStrategy.BUCKET_SORT,
@@ -556,7 +680,7 @@ class EnhancedHyperionSort:
             13: SortStrategy.SEQUENTIAL_SORT
         }
 
-        return strategy_mapping.get(predicted_idx, SortStrategy.ADAPTIVE)
+        return strategy_mapping.get(predicted_strategy_idx, SortStrategy.ADAPTIVE)
 
     def _advanced_block_sort(self, arr: npt.NDArray) -> npt.NDArray:
         if len(arr) < 1000:
@@ -565,15 +689,13 @@ class EnhancedHyperionSort:
         blocks = self.block_manager.split_into_blocks(arr)
         self.metrics.record('block_splits', 1)
         with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-            sorted_blocks = list(executor.map(
-                self._optimize_block_sort, blocks))
+            sorted_blocks = list(tqdm(executor.map(self._optimize_block_sort, blocks), total=len(blocks), desc="Sorting blocks", leave=False))
 
         while len(sorted_blocks) > 1:
             new_blocks = []
-            for i in range(0, len(sorted_blocks), 2):
+            for i in tqdm(range(0, len(sorted_blocks), 2), desc="Merging blocks", leave=False):
                 if i + 1 < len(sorted_blocks):
-                    merged = self._merge_sorted_arrays(
-                        [sorted_blocks[i], sorted_blocks[i + 1]])
+                    merged = self._merge_sorted_arrays([sorted_blocks[i], sorted_blocks[i + 1]])
                     new_blocks.append(merged)
                 else:
                     new_blocks.append(sorted_blocks[i])
@@ -581,7 +703,7 @@ class EnhancedHyperionSort:
             self.metrics.record('block_merges', 1)
 
         return sorted_blocks[0]
-
+    
     def _optimize_block_sort(self, block: npt.NDArray) -> npt.NDArray:
         if len(block) < 16:
             return self._insertion_sort(block)
@@ -597,21 +719,16 @@ class EnhancedHyperionSort:
             return self._introsort(block)
 
     def _radix_sort(self, arr: npt.NDArray) -> npt.NDArray:
-        if len(arr) == 0:
-            return arr
-
-        max_val = np.max(arr)
+        max_val = int(np.max(arr))
         exp = 1
-
         while max_val // exp > 0:
             buckets = [[] for _ in range(10)]
             for x in arr:
-                digit = (x // exp) % 10
+                digit = int((x // exp) % 10)
                 buckets[digit].append(x)
-
-            arr = np.concatenate(buckets)
+            arr = [x for bucket in buckets for x in bucket]
             exp *= 10
-        return arr
+        return np.array(arr)
 
     def _bucket_sort(self, arr: npt.NDArray) -> npt.NDArray:
         if len(arr) == 0:
@@ -746,7 +863,7 @@ class EnhancedHyperionSort:
 
     def _stream_sort_and_collect(self, data_stream: Generator) -> Tuple[npt.NDArray, SortStats]:
         all_chunks = []
-        for chunk in self.stream_processor.process_stream(data_stream):
+        for chunk in tqdm(self.stream_processor.process_stream(data_stream), desc="Processing stream", leave=False):
             all_chunks.append(np.array(chunk))
 
         if not all_chunks:
@@ -819,7 +936,7 @@ class EnhancedHyperionSort:
 
             sorted_chunks = []
             tasks = []
-            for i in range(num_chunks):
+            for i in tqdm(range(num_chunks), desc="Reading chunks", leave=False):
                 offset = i * chunk_size
                 size = min(chunk_size, len(arr) * arr.itemsize - offset)
 
@@ -829,7 +946,7 @@ class EnhancedHyperionSort:
             chunks = await asyncio.gather(*tasks)
 
             with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-                sorted_chunks = list(executor.map(np.sort, chunks))
+                sorted_chunks = list(tqdm(executor.map(np.sort, chunks), total=len(chunks), desc="Sorting chunks", leave=False))
 
             if len(sorted_chunks) == 0:
                 return np.array([])
@@ -840,8 +957,7 @@ class EnhancedHyperionSort:
             file.close()
             os.unlink(file_path)
         except Exception as e:
-            self.logger.error(
-                f"Unable to close or unlink the file: {file_path}, error {e}")
+            self.logger.error(f"Unable to close or unlink the file: {file_path}, error {e}")
         gc.collect()
         return result
 
@@ -1201,7 +1317,7 @@ class EnhancedHyperionSort:
             chunk = await self._read_chunk(file_path, offset, size, dtype)
             return np.sort(chunk)
 
-        for pass_num in range(10):
+        for pass_num in tqdm(range(10), desc="Multi-pass external sort", leave=False):
             tasks = []
             for i in range(num_chunks):
                 if (pass_num == 0 or i % (pass_num * 2) == 0) and (i + pass_num * 2 < num_chunks or pass_num == 0):
@@ -1211,11 +1327,9 @@ class EnhancedHyperionSort:
             if not chunks:
                 break
 
-            sorted_chunks = self._merge_sorted_arrays(
-                sorted_chunks + list(chunks))
+            sorted_chunks = self._merge_sorted_arrays(sorted_chunks + list(chunks))
 
-            num_chunks = math.ceil(
-                len(sorted_chunks) * arr.itemsize / chunk_size)
+            num_chunks = math.ceil(len(sorted_chunks) * arr.itemsize / chunk_size)
 
         os.remove(file_path)
         return sorted_chunks
@@ -1224,7 +1338,7 @@ class EnhancedHyperionSort:
         file_path = "temp_incremental_sort.bin"
         temp_arrays = []
 
-        for i, chunk in enumerate(data_stream):
+        for i, chunk in enumerate(tqdm(data_stream, desc="Processing stream", leave=False)):
             chunk_array = np.array(chunk)
             sorted_chunk = np.sort(chunk_array)
             temp_arrays.append(sorted_chunk)
@@ -1385,23 +1499,20 @@ class EnhancedHyperionSort:
             self._counting_sort(arr)
 
         end_time = time.perf_counter()
-        self.metrics.record(
-            f'benchmark_{algorithm.value}_time', end_time - start_time)
+        self.metrics.record(f'benchmark_{algorithm.value}_time', end_time - start_time)
 
     def _streaming_hybrid_sort(self, data_stream: Generator) -> Tuple[npt.NDArray, SortStats]:
-
         chunk_size = self._adaptive_chunk_size(1000, 8)
 
         chunks = []
-        for chunk in data_stream:
+        for chunk in tqdm(data_stream, desc="Processing stream", leave=False):
             chunk_array = np.array(chunk)
             if len(chunk_array) < chunk_size:
                 chunks.append(np.sort(chunk_array))
             else:
-                sub_chunks = np.array_split(chunk_array, max(
-                    1, len(chunk_array) // chunk_size))
+                sub_chunks = np.array_split(chunk_array, max(1, len(chunk_array) // chunk_size))
                 with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-                    sorted_chunks = list(executor.map(np.sort, sub_chunks))
+                    sorted_chunks = list(tqdm(executor.map(np.sort, sub_chunks), total=len(sub_chunks), desc="Sorting sub-chunks", leave=False))
                 chunks.extend(sorted_chunks)
 
         if not chunks:
@@ -1548,7 +1659,7 @@ class EnhancedHyperionSort:
             if self.distributed:
                 from HyperionSort import create_sort_handler
                 sorter = create_sort_handler(strategy=self.strategy.value, external_sort_threshold=self.external_sort_threshold, n_workers=self.n_workers, chunk_size=self.chunk_size, cache_size=self.cache.size,
-                                             adaptive_threshold=self.adaptive_threshold, block_size=self.block_manager.block_size, use_ml_prediction=self.use_ml_prediction, data_type=self.data_type, log_level=self.logger.level)
+                                            adaptive_threshold=self.adaptive_threshold, block_size=self.block_manager.block_size, use_ml_prediction=self.use_ml_prediction, data_type=self.data_type, log_level=self.logger.level)
                 return await sorter.sort(arr, k, top)
             else:
                 if len(arr) > self.external_sort_threshold:
@@ -1753,9 +1864,12 @@ class EnhancedHyperionSort:
         else:
             density = n / range_size if range_size > 0 else 1
             bucket_count = int(min(
-                math.sqrt(n) * (std_dev / range_size) * 2,
+                math.sqrt(n) * (std_dev / range_size) * 2 if range_size > 0 else math.sqrt(n),
                 n / math.log2(n)
             ))
+
+        if np.isnan(bucket_count) or bucket_count <= 0:
+            bucket_count = max(1, n // 10)
 
         self.cache.put(cache_key, bucket_count)
         return bucket_count
@@ -2152,17 +2266,16 @@ def create_test_training_data(training_sizes: List[int]) -> List[Dict[str, Any]]
 
 
 def test_realtime_predict_logic(data_sizes: List[int], **kwargs) -> None:
-  
-       sorter = EnhancedHyperionSort(**kwargs)
+    sorter = EnhancedHyperionSort(**kwargs)
 
-       print("\n Real time predictor tests")
-       for size in data_sizes:
-         data = np.random.randint(0, size * 10, size=size)
-         predictor = sorter._real_time_predictor(data)
-         print(f"\nReal time predictor for data size: {size:,}")
-         print(f"Estimated time: {predictor['estimated_time']}")
-         print(f"Estimated memory: {predictor['estimated_memory']}")
-         print(f"Suggested Strategy: {predictor['suggested_strategy'].value}")
+    print("\n Real time predictor tests")
+    for size in data_sizes:
+        data = np.random.randint(0, size * 10, size=size)
+        predictor = sorter._real_time_predictor(data)
+        print(f"\nReal time predictor for data size: {size:,}")
+        print(f"Estimated time: {predictor['estimated_time']}")
+        print(f"Estimated memory: {predictor['estimated_memory']}")
+        print(f"Suggested Strategy: {predictor['suggested_strategy'].value}")
 
 
 if __name__ == "__main__":
@@ -2175,8 +2288,8 @@ if __name__ == "__main__":
     enhanced_sort = EnhancedHyperionSort()
     test_training_data = create_test_training_data(training_sizes_for_tests)
 
-    model_from_scratch = EnhancedHyperionSort._train_ml_model(enhanced_sort, n_samples_train=n_samples_train_for_test)
-    model_with_test_data = EnhancedHyperionSort._train_ml_model(enhanced_sort, training_data_set=test_training_data, n_samples_train=n_samples_train_for_test)
+    model_from_scratch = enhanced_sort._train_ml_models(n_samples_train=n_samples_train_for_test)
+    model_with_test_data = enhanced_sort._train_ml_models(training_data_set=test_training_data, n_samples_train=n_samples_train_for_test)
 
     test_predict_data = np.array([
         [1, 50, 1, 100, 0, 0.5],
@@ -2191,8 +2304,8 @@ if __name__ == "__main__":
     ], dtype=np.float64)
 
     for idx, pred_data in enumerate(test_predict_data):
-        predicted_strategy = np.argmax(model_from_scratch.predict(np.array(pred_data).reshape(1, -1), verbose=0)[0])
-        predicted_strategy_set = np.argmax(model_with_test_data.predict(np.array(pred_data).reshape(1, -1), verbose=0)[0])
+        predicted_strategy = np.argmax(model_from_scratch[0].predict(np.array(pred_data).reshape(1, -1))[0])
+        predicted_strategy_set = np.argmax(model_with_test_data[0].predict(np.array(pred_data).reshape(1, -1))[0])
 
         features_data = {
             'std_dev': pred_data[0],
@@ -2206,7 +2319,6 @@ if __name__ == "__main__":
 
         real_prediction = SortStrategy[enhanced_sort.train_predict_label(features_data)]
 
-        # Ensure the predicted strategy is valid
         try:
             predicted_strategy_name = SortStrategy(predicted_strategy).name
         except ValueError:
@@ -2421,12 +2533,12 @@ if __name__ == "__main__":
                   data_type = "number",
                      log_level=logging.INFO
               )
-        data_arr = np.random.randint(0, 1000, size=1_000_000)
-        start_time_profile = time.perf_counter()
-        sorter._benchmark_on_the_fly(data_arr, Algorithm.QUICKSORT)
-        sorter._benchmark_on_the_fly(data_arr, Algorithm.TIMSORT)
-        sorter._benchmark_on_the_fly(data_arr, Algorithm.INTROSORT)
-        stats = sorter.metrics.get_summary()
+    data_arr = np.random.randint(0, 1000, size=1_000_000)
+    start_time_profile = time.perf_counter()
+    sorter._benchmark_on_the_fly(data_arr, Algorithm.QUICKSORT)
+    sorter._benchmark_on_the_fly(data_arr, Algorithm.TIMSORT)
+    sorter._benchmark_on_the_fly(data_arr, Algorithm.INTROSORT)
+    stats = sorter.metrics.get_summary()
 
-        print(f"\nBenchmark on the fly completed using profiler - this time check method overhead: total {time.perf_counter() - start_time_profile}")
-        print(f"Benchmark stats: {stats}")
+    print(f"\nBenchmark on the fly completed using profiler - this time check method overhead: total {time.perf_counter() - start_time_profile}")
+    print(f"Benchmark stats: {stats}")
