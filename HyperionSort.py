@@ -48,7 +48,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    RESET = '\033[0m'
+    
 class SortStrategy(Enum):
     AUTO = "auto"
     PARALLEL = "parallel"
@@ -529,30 +534,35 @@ class EnhancedHyperionSort:
             is_nearly_sorted = False
         else:
             is_nearly_sorted = np.sum(np.diff(sample) < 0) < len(sample) * 0.1
+
         std_dev = np.std(sample)
         range_size = np.ptp(sample)
         data_skewness = skew(sample)
         data_kurtosis = kurtosis(sample)
 
-        features = np.array([std_dev, range_size, is_nearly_sorted, len(
-            arr), data_skewness, data_kurtosis]).reshape(1, -1)
-        predicted_strategy = np.argmax(
-            self.ml_model.predict(features, verbose=0)[0])
+        features = np.array([std_dev, range_size, is_nearly_sorted, len(arr), 
+                            data_skewness, data_kurtosis]).reshape(1, -1)
+        
+        predicted_idx = np.argmax(self.ml_model.predict(features, verbose=0)[0])
+        
+        strategy_mapping = {
+            0: SortStrategy.ADAPTIVE,
+            1: SortStrategy.BUCKET_SORT,
+            2: SortStrategy.HYBRID,
+            3: SortStrategy.PARALLEL,
+            4: SortStrategy.RADIX_SORT,
+            5: SortStrategy.COMPRESSION_SORT,
+            6: SortStrategy.MICRO_SORT,
+            7: SortStrategy.MEMORY_EFFICIENT,
+            8: SortStrategy.STREAMING_HYBRID_SORT,
+            9: SortStrategy.HOT_SWAP_SORT,
+            10: SortStrategy.EXTERNAL_SORT,
+            11: SortStrategy.COUNTING_SORT,
+            12: SortStrategy.LAZY_SORT,
+            13: SortStrategy.SEQUENTIAL_SORT
+        }
 
-        if predicted_strategy == 0:
-            return SortStrategy.ADAPTIVE
-        elif predicted_strategy == 1:
-            return SortStrategy.BUCKET_SORT
-        elif predicted_strategy == 2:
-            return SortStrategy.HYBRID
-        elif predicted_strategy == 3:
-            return SortStrategy.PARALLEL
-        elif predicted_strategy == 4:
-            return SortStrategy.RADIX_SORT
-        elif predicted_strategy == 5:
-            return SortStrategy.COMPRESSION_SORT
-        else:
-            return SortStrategy.ADAPTIVE
+        return strategy_mapping.get(predicted_idx, SortStrategy.ADAPTIVE)
 
     def _advanced_block_sort(self, arr: npt.NDArray) -> npt.NDArray:
         if len(arr) < 1000:
@@ -1897,7 +1907,7 @@ class EnhancedHyperionSort:
         result = np.zeros_like(arr)
         for i in range(0, len(arr), chunk_size):
             chunk = arr[i:i + chunk_size]
-            np.sort(chunk, out=chunk)
+            np.sort(chunk)
             result[i:i + chunk_size] = chunk
         gc.collect()
         return result, self._calculate_stats(arr, "memory_efficient", Algorithm.MERGESORT.value)
@@ -2161,255 +2171,253 @@ def test_realtime_predict_logic(data_sizes: List[int], **kwargs) -> None:
          print(f"Suggested Strategy: {predictor['suggested_strategy'].value}")
 
 
-if __name__ == "__main__":  
+if __name__ == "__main__":
     profile_execution = True
     data_distribution_test = True
     benchmark_mode = True
     n_samples_train_for_test = 100_000
     training_sizes_for_tests = [100, 1000, 10_000, 100_000]
-    
+
     enhanced_sort = EnhancedHyperionSort()
     test_training_data = create_test_training_data(training_sizes_for_tests)
-    
+
     model_from_scratch = EnhancedHyperionSort._train_ml_model(enhanced_sort, n_samples_train=n_samples_train_for_test)
     model_with_test_data = EnhancedHyperionSort._train_ml_model(enhanced_sort, training_data_set=test_training_data, n_samples_train=n_samples_train_for_test)
 
-
     test_predict_data = np.array([
-                [1, 50, 1, 100, 0, 0.5],
-                [10, 100, 0, 100_000, 2.3, 6.2],
-                [200, 100, 0, 1_000_000, 0.5, 1],
-                 [2, 40, 1, 100, -1, 0.4],
-                  [3, 5000, 1, 10_000, -1, -1],
-                  [40, 5, 0, 1_000, 0.1, 0.2],
-               [4000, 100000, 1, 200000, 1.3, 2],
-                [5, 5, 1, 100, -2, 0.1],
-                [40, 1000, 0, 500, 0.3, 2],
-         ], dtype= np.float64 )
-   
+        [1, 50, 1, 100, 0, 0.5],
+        [10, 100, 0, 100_000, 2.3, 6.2],
+        [200, 100, 0, 1_000_000, 0.5, 1],
+        [2, 40, 1, 100, -1, 0.4],
+        [3, 5000, 1, 10_000, -1, -1],
+        [40, 5, 0, 1_000, 0.1, 0.2],
+        [4000, 100000, 1, 200000, 1.3, 2],
+        [5, 5, 1, 100, -2, 0.1],
+        [40, 1000, 0, 500, 0.3, 2],
+    ], dtype=np.float64)
 
     for idx, pred_data in enumerate(test_predict_data):
+        predicted_strategy = np.argmax(model_from_scratch.predict(np.array(pred_data).reshape(1, -1), verbose=0)[0])
+        predicted_strategy_set = np.argmax(model_with_test_data.predict(np.array(pred_data).reshape(1, -1), verbose=0)[0])
 
-            predicted_strategy = np.argmax(model_from_scratch.predict(np.array(pred_data).reshape(1,-1), verbose = 0)[0])
+        features_data = {
+            'std_dev': pred_data[0],
+            'range_size': pred_data[1],
+            'is_nearly_sorted': pred_data[2],
+            'n': pred_data[3],
+            'data_skewness': pred_data[4],
+            'data_kurtosis': pred_data[5],
+            'data_type': 'number'
+        }
 
-            predicted_strategy_set =  np.argmax(model_with_test_data.predict(np.array(pred_data).reshape(1,-1), verbose = 0)[0])
+        real_prediction = SortStrategy[enhanced_sort.train_predict_label(features_data)]
 
-            features_data  = {
-              'std_dev' : pred_data[0],
-               'range_size' :  pred_data[1],
-                'is_nearly_sorted': pred_data[2],
-               'n' : pred_data[3],
-             'data_skewness': pred_data[4],
-                'data_kurtosis':pred_data[5],
-               'data_type':'number'
-            }
+        # Ensure the predicted strategy is valid
+        try:
+            predicted_strategy_name = SortStrategy(predicted_strategy).name
+        except ValueError:
+            predicted_strategy_name = "INVALID"
 
+        try:
+            predicted_strategy_set_name = SortStrategy(predicted_strategy_set).name
+        except ValueError:
+            predicted_strategy_set_name = "INVALID"
 
-            real_prediction  =   SortStrategy[enhanced_sort.train_predict_label(features_data)]
-            print(f"Prediction Test Case {idx}: Raw data: {pred_data}")
-            print(f"Random Generated Model predict {SortStrategy(predicted_strategy).name} vs  Dataset trained predict: {SortStrategy(predicted_strategy_set).name} , Expected Result : {real_prediction.name} \n")
+        print(f"Prediction Test Case {idx}: Raw data: {pred_data}")
+        print(f"Random Generated Model predict {predicted_strategy_name} vs Dataset trained predict: {predicted_strategy_set_name}, Expected Result: {real_prediction.name} \n")
     
     if benchmark_mode:
-              sorter = EnhancedHyperionSort(
-                   strategy = SortStrategy.AUTO,
-                     profile=profile_execution,
-                    cache_size=2000,
-                    adaptive_threshold=0.8,
-                    use_ml_prediction=True,
-                     external_sort_threshold=1000000,
-                   eco_mode=True,
-                      priority_mode="speed",
-                     deduplicate_sort=True,
-                   data_type = "number",
-                    log_level=logging.INFO,
-                   benchmark=True,
-                 data_distribution_test=data_distribution_test
-                )
-
-              test_sizes = [100, 1_000, 10_000, 100_000, 1_000_000, 5_000_000, 10_000_000]
-              benchmark_results = benchmark(
-                sorter=sorter,
-                  sizes=test_sizes,
-                    runs=3,
-                    save_results=True
-                )
-              if data_distribution_test:
-                       def data_generator():
-                         for i in range(1000000):
-                           yield np.random.randint(0, 1000)
-
-
-                       sorter = EnhancedHyperionSort(
-                             strategy = SortStrategy.STREAM,
-                             profile=False,
-                              cache_size=2000,
-                              adaptive_threshold=0.8,
-                             stream_mode=True,
-                              use_ml_prediction=False,
-                          data_type = "number",
-                           log_level=logging.INFO
-                       )
-
-                       sorted_arr, stream_stats = asyncio.run(sorter.sort(data_generator()))
-                       print(f"Stream sort completed, total chunks: {stream_stats.stream_chunks}")
-                       print(f"Stream sort time : {stream_stats.execution_time:.4f} seconds")
-                       print(f"Stream sorted item: {len(sorted_arr):,} items")
-
-                       sorter = EnhancedHyperionSort(
-                                   strategy = SortStrategy.LAZY_SORT,
-                                    profile=False,
-                                    cache_size = 2000,
-                                     adaptive_threshold=0.8,
-                                      stream_mode=False,
-                                     use_ml_prediction=False,
-                                data_type = "number",
-                                      log_level=logging.INFO
-                               )
-
-                       data_arr = np.random.randint(0, 1000, size=1_000_000)
-                       top_k = 100
-                       sorted_topk, lazy_stats = asyncio.run(sorter.sort(data_arr, k=top_k, top=True))
-                       print(f"\nLazy sort completed, top {top_k} elements")
-                       print(f"Lazy sort time : {lazy_stats.execution_time:.4f} seconds")
-                       print(f"Lazy sorted item: {len(sorted_topk):,} items")
-
-                       print("\n🌟 Kết quả tổng quan:")
-                       print(f"📊 Tổng số lần chạy: {benchmark_results['summary']['total_runs']}")
-                       print("\n🏆 Hiệu suất tốt nhất:")
-                       best = benchmark_results['summary']['best_performance']
-                       print(f"- Kích thước: {best['size']:,}")
-                       print(f"- Thời gian: {best['time']:.4f} giây")
-                       print(f"- Strategy: {best['strategy']}")
-                       print(f"- Distribution: {best['distribution']}")
-
-                       sorter = EnhancedHyperionSort(
-                            strategy=SortStrategy.AUTO,
-                            profile=False,
-                            cache_size=2000,
-                           adaptive_threshold=0.8,
-                          use_ml_prediction=False,
-                        external_sort_threshold=1000000,
-                            eco_mode=True,
-                             priority_mode="speed",
-                           deduplicate_sort = True,
-                         data_type = "string",
-                             log_level = logging.INFO
-                     )
-
-                       string_data = ["apple", "banana", "cherry", "date", "fig", "apple", "banana", "date"]
-                       sorted_string, string_stats = asyncio.run(sorter.sort(string_data))
-                       print(f"\nString sort completed, time: {string_stats.execution_time:.4f} seconds")
-                       print(f"Sorted string result {sorted_string}")
-
-
-                       sorter = EnhancedHyperionSort(
-                            strategy=SortStrategy.AUTO,
-                             profile = False,
-                            cache_size=2000,
-                             adaptive_threshold = 0.8,
-                           use_ml_prediction = False,
-                        external_sort_threshold=1000000,
-                             eco_mode = True,
-                         priority_mode="speed",
-                           deduplicate_sort = True,
-                           data_type = "object",
-                          log_level = logging.INFO
-                       )
-
-                       object_data = [{"name": "bob", "age": 30}, {
-                           "name": "alice", "age": 25}, {"name": "bob", "age": 20}]
-                       sorted_object, object_stats = asyncio.run(
-                            sorter.sort(object_data))
-                       print(f"\nObject sort completed, time: {object_stats.execution_time:.4f} seconds")
-
-
-    test_realtime_predict_logic(
-               data_sizes=training_sizes_for_tests,
-                 strategy = SortStrategy.AUTO.value,
-                 profile=False,
-                cache_size=2000,
-                adaptive_threshold=0.8,
-               use_ml_prediction=True,
-                external_sort_threshold=1000000,
-                   eco_mode = False,
-                 priority_mode="speed",
-                  deduplicate_sort=False,
-                    data_type = "number",
-                    log_level = logging.INFO
-         )
-
-    sorter = EnhancedHyperionSort(
-              strategy = SortStrategy.AUTO,
-               profile=False,
-              cache_size=2000,
-                 adaptive_threshold=0.8,
-                 use_ml_prediction = False,
-             external_sort_threshold = 1000000,
-                 eco_mode=True,
-              priority_mode="memory",
-               deduplicate_sort=False,
-              data_type = "number",
-                 log_level = logging.INFO
-             )
-
-
-    priority_data = np.random.randint(0, 1000, size = 1_000_000)
-    sorted_priority_arr, priority_stats = asyncio.run(sorter.sort(priority_data))
-    print(f"\nPriority sort mode completed, total time: {priority_stats.execution_time:.4f}")
-    print(f"Priority sort mode items: {len(sorted_priority_arr):,} items")
-
-    sorter = EnhancedHyperionSort(
-              strategy = SortStrategy.STREAM,
-              profile = False,
-               cache_size = 2000,
-                adaptive_threshold = 0.8,
-            stream_mode=True,
-             use_ml_prediction = False,
-               data_type = "number",
-               log_level=logging.INFO
-           )
-
-
-    def streaming_data():
-         for i in range(1000):
-           yield np.random.randint(0, 100, size = 1000)
-
-    sorted_stream, streaming_stats = asyncio.run(sorter.sort(streaming_data()))
-    print(f"\nStreaming sort completed, total time: {streaming_stats.execution_time:.4f}")
-    print(f"Streaming sort processed items : {streaming_stats.items_processed:,}")
-
-
-    sorter = EnhancedHyperionSort(
-                strategy = SortStrategy.STREAMING_HYBRID_SORT,
-               profile = False,
-               cache_size=2000,
-                adaptive_threshold=0.8,
-               stream_mode = True,
-             use_ml_prediction = False,
-              data_type = "number",
-            log_level=logging.INFO
+        sorter = EnhancedHyperionSort(
+            strategy=SortStrategy.AUTO,
+            profile=profile_execution,
+            cache_size=2000,
+            adaptive_threshold=0.8,
+            use_ml_prediction=True,
+            external_sort_threshold=1000000,
+            eco_mode=True,
+            priority_mode="speed",
+            deduplicate_sort=True,
+            data_type="number",
+            log_level=logging.INFO,
+            benchmark=True,
+            data_distribution_test=data_distribution_test
         )
 
+        test_sizes = [100, 1_000, 10_000, 100_000, 1_000_000, 5_000_000, 10_000_000]
+        benchmark_results = benchmark(
+            sorter=sorter,
+            sizes=test_sizes,
+            runs=3,
+            save_results=True
+        )
+
+        if data_distribution_test:
+            def data_generator():
+                for i in range(1000000):
+                    yield np.random.randint(0, 1000)
+
+            sorter = EnhancedHyperionSort(
+                strategy=SortStrategy.STREAM,
+                profile=False,
+                cache_size=2000,
+                adaptive_threshold=0.8,
+                stream_mode=True,
+                use_ml_prediction=False,
+                data_type="number",
+                log_level=logging.INFO
+            )
+
+            sorted_arr, stream_stats = asyncio.run(sorter.sort(data_generator()))
+            print(f"{Colors.GREEN}Stream sort completed, total chunks: {stream_stats.stream_chunks}{Colors.RESET}")
+            print(f"{Colors.GREEN}Stream sort time : {stream_stats.execution_time:.4f} seconds{Colors.RESET}")
+            print(f"{Colors.GREEN}Stream sorted item: {len(sorted_arr):,} items{Colors.RESET}")
+
+            sorter = EnhancedHyperionSort(
+                strategy=SortStrategy.LAZY_SORT,
+                profile=False,
+                cache_size=2000,
+                adaptive_threshold=0.8,
+                stream_mode=False,
+                use_ml_prediction=False,
+                data_type="number",
+                log_level=logging.INFO
+            )
+
+            data_arr = np.random.randint(0, 1000, size=1_000_000)
+            top_k = 100
+            sorted_topk, lazy_stats = asyncio.run(sorter.sort(data_arr, k=top_k, top=True))
+            print(f"{Colors.GREEN}\nLazy sort completed, top {top_k} elements{Colors.RESET}")
+            print(f"{Colors.GREEN}Lazy sort time : {lazy_stats.execution_time:.4f} seconds{Colors.RESET}")
+            print(f"{Colors.GREEN}Lazy sorted item: {len(sorted_topk):,} items{Colors.RESET}")
+
+            print(f"{Colors.GREEN}\n🌟 Kết quả tổng quan:{Colors.RESET}")
+            print(f"{Colors.GREEN}📊 Tổng số lần chạy: {benchmark_results['summary']['total_runs']}{Colors.RESET}")
+            print(f"{Colors.GREEN}\n🏆 Hiệu suất tốt nhất:{Colors.RESET}")
+            best = benchmark_results['summary']['best_performance']
+            print(f"{Colors.GREEN}- Kích thước: {best['size']:,}{Colors.RESET}")
+            print(f"{Colors.GREEN}- Thời gian: {best['time']:.4f} giây{Colors.RESET}")
+            print(f"{Colors.GREEN}- Strategy: {best['strategy']}{Colors.RESET}")
+            print(f"{Colors.GREEN}- Distribution: {best['distribution']}{Colors.RESET}")
+
+            sorter = EnhancedHyperionSort(
+                strategy=SortStrategy.AUTO,
+                profile=False,
+                cache_size=2000,
+                adaptive_threshold=0.8,
+                use_ml_prediction=False,
+                external_sort_threshold=1000000,
+                eco_mode=True,
+                priority_mode="speed",
+                deduplicate_sort=True,
+                data_type="string",
+                log_level=logging.INFO
+            )
+
+            string_data = ["apple", "banana", "cherry", "date", "fig", "apple", "banana", "date"]
+            sorted_string, string_stats = asyncio.run(sorter.sort(string_data))
+            print(f"{Colors.GREEN}\nString sort completed, time: {string_stats.execution_time:.4f} seconds{Colors.RESET}")
+            print(f"{Colors.GREEN}Sorted string result {sorted_string}{Colors.RESET}")
+
+            sorter = EnhancedHyperionSort(
+                strategy=SortStrategy.AUTO,
+                profile=False,
+                cache_size=2000,
+                adaptive_threshold=0.8,
+                use_ml_prediction=False,
+                external_sort_threshold=1000000,
+                eco_mode=True,
+                priority_mode="speed",
+                deduplicate_sort=True,
+                data_type="object",
+                log_level=logging.INFO
+            )
+
+            object_data = [{"name": "bob", "age": 30}, {"name": "alice", "age": 25}, {"name": "bob", "age": 20}]
+            sorted_object, object_stats = asyncio.run(sorter.sort(object_data))
+            print(f"{Colors.GREEN}\nObject sort completed, time: {object_stats.execution_time:.4f} seconds{Colors.RESET}")
+
+    test_realtime_predict_logic(
+        data_sizes=training_sizes_for_tests,
+        strategy=SortStrategy.AUTO.value,
+        profile=False,
+        cache_size=2000,
+        adaptive_threshold=0.8,
+        use_ml_prediction=True,
+        external_sort_threshold=1000000,
+        eco_mode=False,
+        priority_mode="speed",
+        deduplicate_sort=False,
+        data_type="number",
+        log_level=logging.INFO
+    )
+
+    sorter = EnhancedHyperionSort(
+        strategy=SortStrategy.AUTO,
+        profile=False,
+        cache_size=2000,
+        adaptive_threshold=0.8,
+        use_ml_prediction=False,
+        external_sort_threshold=1000000,
+        eco_mode=True,
+        priority_mode="memory",
+        deduplicate_sort=False,
+        data_type="number",
+        log_level=logging.INFO
+    )
+
+    priority_data = np.random.randint(0, 1000, size=1_000_000)
+    sorted_priority_arr, priority_stats = asyncio.run(sorter.sort(priority_data))
+    print(f"{Colors.GREEN}\nPriority sort mode completed, total time: {priority_stats.execution_time:.4f}{Colors.RESET}")
+    print(f"{Colors.GREEN}Priority sort mode items: {len(sorted_priority_arr):,} items{Colors.RESET}")
+
+    sorter = EnhancedHyperionSort(
+        strategy=SortStrategy.STREAM,
+        profile=False,
+        cache_size=2000,
+        adaptive_threshold=0.8,
+        stream_mode=True,
+        use_ml_prediction=False,
+        data_type="number",
+        log_level=logging.INFO
+    )
+
+    def streaming_data():
+        for i in range(1000):
+            yield np.random.randint(0, 100, size=1000)
 
     sorted_stream, streaming_stats = asyncio.run(sorter.sort(streaming_data()))
-    print(f"\nStreaming hybrid sort completed, total time: {streaming_stats.execution_time:.4f}")
-    print(f"Streaming hybrid processed items : {streaming_stats.items_processed:,}")
+    print(f"{Colors.GREEN}\nStreaming sort completed, total time: {streaming_stats.execution_time:.4f}{Colors.RESET}")
+    print(f"{Colors.GREEN}Streaming sort processed items : {streaming_stats.items_processed:,}{Colors.RESET}")
 
-    if  profile_execution :
-        
+    sorter = EnhancedHyperionSort(
+        strategy=SortStrategy.STREAMING_HYBRID_SORT,
+        profile=False,
+        cache_size=2000,
+        adaptive_threshold=0.8,
+        stream_mode=True,
+        use_ml_prediction=False,
+        data_type="number",
+        log_level=logging.INFO
+    )
+
+    sorted_stream, streaming_stats = asyncio.run(sorter.sort(streaming_data()))
+    print(f"{Colors.GREEN}\nStreaming hybrid sort completed, total time: {streaming_stats.execution_time:.4f}{Colors.RESET}")
+    print(f"{Colors.GREEN}Streaming hybrid processed items : {streaming_stats.items_processed:,}{Colors.RESET}")
+
+    if profile_execution:
         sorter = EnhancedHyperionSort(
-                  strategy = SortStrategy.AUTO,
-                   profile = False,
-                  cache_size = 2000,
-                   adaptive_threshold = 0.8,
-                  use_ml_prediction=False,
-                  external_sort_threshold=1000000,
-                eco_mode=False,
-                 priority_mode="speed",
-                    deduplicate_sort=False,
-                  data_type = "number",
-                     log_level=logging.INFO
-              )
+            strategy=SortStrategy.AUTO,
+            profile=False,
+            cache_size=2000,
+            adaptive_threshold=0.8,
+            use_ml_prediction=False,
+            external_sort_threshold=1000000,
+            eco_mode=False,
+            priority_mode="speed",
+            deduplicate_sort=False,
+            data_type="number",
+            log_level=logging.INFO
+        )
         data_arr = np.random.randint(0, 1000, size=1_000_000)
         start_time_profile = time.perf_counter()
         sorter._benchmark_on_the_fly(data_arr, Algorithm.QUICKSORT)
@@ -2417,5 +2425,5 @@ if __name__ == "__main__":
         sorter._benchmark_on_the_fly(data_arr, Algorithm.INTROSORT)
         stats = sorter.metrics.get_summary()
 
-        print(f"\nBenchmark on the fly completed using profiler - this time check method overhead: total {time.perf_counter() - start_time_profile}")
-        print(f"Benchmark stats: {stats}")
+        print(f"{Colors.GREEN}\nBenchmark on the fly completed using profiler - this time check method overhead: total {time.perf_counter() - start_time_profile}{Colors.RESET}")
+        print(f"{Colors.GREEN}Benchmark stats: {stats}{Colors.RESET}")
