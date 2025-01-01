@@ -1,2 +1,4 @@
 __pycache__/
 catboost_info/
+.pytest_cache/
+.vscode/

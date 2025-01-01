@@ -16,3 +16,6 @@ tqdm
 xgboost
 lightgbm
 catboost
+retry
+retrying
+pytest
