@@ -19,3 +19,4 @@ catboost
 retry
 retrying
 pytest
+hilbertcurve

@@ -2,7 +2,6 @@
 
 This repository contains an enhanced and dynamic implementation of various sorting algorithms, designed for optimal performance across a wide range of data types and sizes. It includes adaptive strategy selection, stream processing, multi-threading, machine learning enhanced predictions, and more, to provide a flexible and powerful sorting solution.
 
-[ [English](https://github.com/DinhPhongNe/Hyperion_Sort/blob/main/README.md)] - [ [Vietnamses](https://github.com/DinhPhongNe/Hyperion_Sort/blob/main/README_vi.md) ]
 ## Features
 
 *   **Adaptive Sorting Strategy:**

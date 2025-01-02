@@ -2,8 +2,6 @@
 
 Repository này chứa một phiên bản nâng cấp và linh hoạt của các thuật toán sắp xếp, được thiết kế để đạt hiệu suất tối ưu trên nhiều loại và kích thước dữ liệu khác nhau. Nó bao gồm các tính năng như lựa chọn chiến lược thích ứng, xử lý luồng dữ liệu, đa luồng, dự đoán được tăng cường bởi machine learning, và nhiều tính năng khác, tạo nên một giải pháp sắp xếp linh hoạt và mạnh mẽ.
 
-[ [Tiếng Anh](https://github.com/DinhPhongNe/Hyperion_Sort/blob/main/README.md)] - [ [Tiếng Việt](https://github.com/DinhPhongNe/Hyperion_Sort/blob/main/README_vi.md) ]
-
 ## Tính năng
 
 *   **Chiến lược sắp xếp thích ứng:**
