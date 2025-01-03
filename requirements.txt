@@ -24,3 +24,4 @@ seaborn
 bokeh
 statsmodels
 pandas
+ipython

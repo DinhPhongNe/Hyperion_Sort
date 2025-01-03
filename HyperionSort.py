@@ -80,8 +80,19 @@ def log_system_metrics():
 
 def plot_performance_metrics(results):
     df = pd.DataFrame(results)
+    
+    df['size'] = pd.to_numeric(df['size'], errors='coerce')
+    df['time'] = pd.to_numeric(df['time'], errors='coerce')
+    
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=['size', 'time'])
+    
+    if len(df) == 0:
+        print("Không có dữ liệu hợp lệ để vẽ biểu đồ!")
+        return
+        
     plt.figure(figsize=(14, 8))
-    sns.lineplot(data=df, x='size', y='time', hue='strategy', marker='o')
+    sns.lineplot(data=df, x='size', y='time', hue='strategy', marker='o', ci=None)
     plt.title('Execution Time vs Data Size')
     plt.xlabel('Data Size')
     plt.ylabel('Execution Time (seconds)')
@@ -158,7 +169,10 @@ class SortStrategy(Enum):
     def from_str(cls, strategy: str):
         return cls[strategy.upper()]
 
-
+class MultiLayerCache:
+    def __init__(self, l1_size: int, l2_size: int):
+        self.l1_cache = LRUCache(l1_size)
+        self.l2_cache = LRUCache(l2_size)
 
 class Algorithm(Enum):
     QUICKSORT = "quicksort"
@@ -621,6 +635,10 @@ class EnhancedHyperionSort:
     def _simulate_data(self, size: int) -> npt.NDArray:
         return np.random.randint(0, size * 10, size=size)
 
+    def incremental_training(self, new_data: List[Dict[str, Any]]):
+        self.training_data.extend(new_data)
+        self._train_ml_models(training_data_set=self.training_data)
+    
     def _train_ml_models(self, training_data_set=None, n_samples_train=100000, **kwargs):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"Benchmark_results/benchmark_train_{timestamp}.pkl"
@@ -827,6 +845,120 @@ class EnhancedHyperionSort:
 
         return strategy_mapping.get(predicted_strategy_idx, SortStrategy.ADAPTIVE)
 
+    def adaptive_thread_scaling(self, arr: npt.NDArray):
+        n = len(arr)
+        if n < 1000:
+            self.n_workers = 1
+        elif n < 10000:
+            self.n_workers = min(2, psutil.cpu_count() - 1)
+        else:
+            self.n_workers = min(4, psutil.cpu_count() - 1)
+ 
+    def pipeline_processing(self, data_stream: Generator) -> Generator:
+        for chunk in data_stream:
+            yield np.sort(chunk)
+
+    def chunk_wise_processing(self, arr: npt.NDArray) -> npt.NDArray:
+        chunk_size = self._adaptive_chunk_size(len(arr), arr.itemsize)
+        chunks = np.array_split(arr, max(1, len(arr) // chunk_size))
+        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+            sorted_chunks = list(executor.map(np.sort, chunks))
+        return self._merge_sorted_arrays(sorted_chunks)
+    
+    def hierarchical_parallelism(self, arr: npt.NDArray) -> npt.NDArray:
+        chunk_size = self._adaptive_chunk_size(len(arr), arr.itemsize)
+        chunks = np.array_split(arr, max(1, len(arr) // chunk_size))
+        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+            sorted_chunks = list(executor.map(self._parallel_sort_block, chunks))
+        return self._merge_sorted_arrays(sorted_chunks)
+    
+    def set_thread_affinity(self):
+        p = psutil.Process(os.getpid())
+        p.cpu_affinity([i for i in range(psutil.cpu_count())])
+
+    def use_shared_memory(self, arr: npt.NDArray) -> npt.NDArray:
+        shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
+        shared_arr = np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf)
+        np.copyto(shared_arr, arr)
+        return shared_arr
+   
+    def feature_reduction(self, features: np.ndarray) -> np.ndarray:
+        important_features = [0, 1, 2, 3]
+        return features[:, important_features]
+
+    def cross_validation(self, X_train, y_train):
+        param_grid = {'n_estimators': [50, 100], 'max_depth': [3, 5]}
+        grid_search = GridSearchCV(RandomForestClassifier(), param_grid, cv=3)
+        grid_search.fit(X_train, y_train)
+        return grid_search.best_estimator_
+
+    def incremental_updates(self, new_data: List[Dict[str, Any]]):
+        self.training_data.extend(new_data)
+        self._train_ml_models(training_data_set=self.training_data)
+    
+    def bagging_models(self, X_train, y_train):
+        model = BaggingClassifier(base_estimator=DecisionTreeClassifier(), n_estimators=10)
+        model.fit(X_train, y_train)
+        return model
+
+    def performance_benchmarks(self, models: List):
+        for model in models:
+            y_pred = model.predict(self.X_val)
+            accuracy = accuracy_score(self.y_val, y_pred)
+            self.logger.info(f"Model accuracy: {accuracy:.4f}")
+   
+    async def async_file_access(self, file_path: str, offset: int, size: int, dtype: np.dtype) -> np.ndarray:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, partial(self._read_chunk_sync, file_path, offset, size, dtype))
+    
+    def reduce_disk_io(self, arr: npt.NDArray) -> npt.NDArray:
+        compressed_data = compress(arr.tobytes())
+        decompressed_arr = np.frombuffer(decompress(compressed_data), dtype=arr.dtype)
+        return decompressed_arr
+
+    def data_compression(self, arr: npt.NDArray) -> npt.NDArray:
+        compressed_data = compress(arr.tobytes())
+        decompressed_arr = np.frombuffer(decompress(compressed_data), dtype=arr.dtype)
+        return decompressed_arr
+
+    def task_scheduling(self, tasks: List[Callable]):
+        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+            executor.map(lambda task: task(), tasks)
+
+    def data_distribution_detection(self, arr: npt.NDArray) -> str:
+        skewness = skew(arr)
+        kurtosis = kurtosis(arr)
+        if abs(skewness) < 0.5 and abs(kurtosis) < 3:
+            return "uniform"
+        else:
+            return "skewed"
+
+    async def chunked_external_sorting(self, arr: npt.NDArray) -> npt.NDArray:
+        chunk_size = self._adaptive_chunk_size(len(arr), arr.itemsize)
+        chunks = np.array_split(arr, max(1, len(arr) // chunk_size))
+        sorted_chunks = []
+        for chunk in chunks:
+            sorted_chunks.append(np.sort(chunk))
+        return self._merge_sorted_arrays(sorted_chunks)
+
+    def statistical_insights(self, arr: npt.NDArray) -> Dict[str, float]:
+        return {
+            "skewness": skew(arr),
+            "kurtosis": kurtosis(arr)
+        }
+
+    def realtime_monitoring(self):
+        cpu_usage = psutil.cpu_percent(interval=1)
+        memory_info = psutil.virtual_memory()
+        self.logger.info(f"CPU Usage: {cpu_usage}%")
+        self.logger.info(f"Memory Usage: {memory_info.percent}%")
+
+    def dynamic_model_switching(self, arr: npt.NDArray):
+        if self.data_distribution_detection(arr) == "uniform":
+            self.strategy = SortStrategy.BUCKET_SORT
+        else:
+            self.strategy = SortStrategy.INTROSORT
+        
     def _advanced_block_sort(self, arr: npt.NDArray) -> npt.NDArray:
         if len(arr) < 1000:
             return np.sort(arr)
@@ -1411,11 +1543,15 @@ class EnhancedHyperionSort:
         
         return np.array(merged)
 
-    def _use_memmap(self, arr: npt.NDArray, filename: str) -> npt.NDArray:
+    def use_memmap(self, arr: npt.NDArray, filename: str) -> npt.NDArray:
         memmap_arr = np.memmap(filename, dtype=arr.dtype, mode='w+', shape=arr.shape)
         np.copyto(memmap_arr, arr)
         return memmap_arr
 
+    def dynamic_memory_allocation(self):
+        if self.cache.hits / (self.cache.hits + self.cache.misses) < self.adaptive_threshold:
+            self.cache.size = min(self.cache.size * 2, 10000)
+           
     async def _pipelined_external_sort(self, arr: np.ndarray) -> np.ndarray:
         file_path = "temp_data.bin"
         dtype = arr.dtype
@@ -1713,18 +1849,6 @@ class EnhancedHyperionSort:
 
         return self._merge_sorted_arrays(sorted_chunks)
 
-    def _index_sort(self, arr: npt.NDArray) -> npt.NDArray:
-        indices = np.argsort(arr)
-        return arr[indices]
-
-    def _downsample_sort(self, arr: npt.NDArray, factor: int = 10) -> npt.NDArray:
-        if len(arr) < factor:
-            return np.sort(arr)
-
-        downsampled = arr[::factor]
-        sorted_downsampled = np.sort(downsampled)
-        return sorted_downsampled
-
     def _detect_homogeneous_data(self, arr: npt.NDArray) -> bool:
         return np.all(arr == arr[0])
 
@@ -1757,16 +1881,6 @@ class EnhancedHyperionSort:
             sorted_chunks = list(executor.map(np.sort, chunks))
 
         return self._merge_sorted_arrays(sorted_chunks)
-
-    def _deduplicate(self, arr: npt.NDArray) -> npt.NDArray:
-        return np.unique(arr)
-
-    def _quick_filter(self, arr: npt.NDArray, k: int) -> npt.NDArray:
-        if k >= len(arr):
-            return np.sort(arr)
-
-        result = self._quickselect(arr, k)
-        return arr[arr <= result]
 
     def _shared_memory_sort(self, arr: npt.NDArray) -> npt.NDArray:
         shm = shared_memory.SharedMemory(create=True, size=arr.nbytes)
@@ -2000,6 +2114,23 @@ class EnhancedHyperionSort:
             "current_strategy": current_strategy
         }
 
+    def measure_sort_performance(arr: npt.NDArray, strategy: SortStrategy) -> float:
+        start_time = time.perf_counter()
+        sorted_arr, _ = asyncio.run(self._sort_with_fallback(arr, strategy))
+        end_time = time.perf_counter()
+        return end_time - start_time
+
+    def choose_best_strategy(arr: npt.NDArray) -> SortStrategy:
+        strategies = [SortStrategy.BUCKET_SORT, SortStrategy.INTROSORT, SortStrategy.TIMSORT]
+        best_strategy = strategies[0]
+        best_time = float('inf')
+        for strategy in strategies:
+            time_taken = measure_sort_performance(arr, strategy)
+            if time_taken < best_time:
+                best_time = time_taken
+                best_strategy = strategy
+        return best_strategy
+    
     def _predictive_analytics(self, arr: npt.NDArray) -> dict:
 
         n = len(arr)
@@ -2413,16 +2544,28 @@ class EnhancedHyperionSort:
 
         return partitions
 
-    def _hybrid_sort(self, arr: npt.NDArray) -> npt.NDArray:
+    def hybrid_sort(self, arr: npt.NDArray) -> npt.NDArray:
         if len(arr) < 1000:
             return np.sort(arr)
+        elif len(arr) < 10000:
+            return self._introsort(arr)
+        else:
+            return np.sort(arr, kind='stable')
 
-        partitions = self._advanced_partition(arr)
+    def dynamic_sampling(self, arr: npt.NDArray) -> npt.NDArray:
+        sample_size = min(1000, len(arr))
+        sample = arr[np.random.choice(len(arr), sample_size, replace=False)]
+        return sample
 
-        with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-            sorted_partitions = list(executor.map(np.sort, partitions))
+    def compression_aware_sort(self, arr: npt.NDArray) -> npt.NDArray:
+        compressed_data = compress(arr.tobytes())
+        decompressed_arr = np.frombuffer(decompress(compressed_data), dtype=arr.dtype)
+        return np.sort(decompressed_arr)
 
-        return np.concatenate(sorted_partitions)
+    def early_exit_optimization(self, arr: npt.NDArray) -> npt.NDArray:
+        if np.all(arr[:-1] <= arr[1:]):
+            return arr
+        return np.sort(arr)
 
     def _merge_sorted_arrays(self, arrays: List[np.ndarray]) -> np.ndarray:
         merged = []
