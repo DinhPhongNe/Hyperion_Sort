@@ -30,7 +30,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier  
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.base import BaseEstimator
+from scipy.stats import uniform, randint
 from scipy.stats import skew, kurtosis, entropy
 from lz4.frame import compress, decompress
 import tensorflow as tf
@@ -58,6 +61,7 @@ from bokeh.models import ColumnDataSource
 from bokeh.palettes import Category20
 from bokeh.io import output_notebook
 import statsmodels.api as sm
+from imblearn.over_sampling import SMOTE
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -134,6 +138,119 @@ def critical_function():
     data = np.random.randint(0, 1000, size=1_000_000)
     sorted_data, stats = asyncio.run(sorter.sort(data))
     logger.info(f"Sorting completed. Execution time: {stats.execution_time:.4f} seconds")
+
+class WrappedXGBClassifier(xgb.XGBClassifier, BaseEstimator):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._estimator_type = "classifier"
+
+    def fit(self, X, y, **fit_params):
+        super().fit(X, y, **fit_params)
+        return self
+
+    def __sklearn_tags__(self):
+        return {
+            'non_deterministic': True,
+            'requires_positive_X': False,
+            'requires_positive_y': False,
+            'X_types': ['2darray'],
+            'poor_score': False,
+            'no_validation': False,
+            'multioutput': False,
+            'multioutput_only': False,
+            'allow_nan': False,
+            'stateless': False,
+            'binary_only': False,
+            'requires_fit': True,
+            'requires_y': True,
+            'pairwise': False,
+            'preserves_dtype': [np.float64, np.float32]
+        }
+
+class WrappedLGBMClassifier(lgb.LGBMClassifier, BaseEstimator):
+    def __init__(self, random_state=None, **kwargs):
+        super().__init__(random_state=random_state, **kwargs)
+        self._estimator_type = "classifier"
+
+    def fit(self, X, y, **fit_params):
+        super().fit(X, y, **fit_params)
+        return self
+
+    def __sklearn_tags__(self):
+        return {
+            'non_deterministic': True,
+            'requires_positive_X': False,
+            'requires_positive_y': False,
+            'X_types': ['2darray'],
+            'poor_score': False,
+            'no_validation': False,
+            'multioutput': False,
+            'multioutput_only': False,
+            'allow_nan': False,
+            'stateless': False,
+            'binary_only': False,
+            'requires_fit': True,
+            'requires_y': True,
+            'pairwise': False,
+            'preserves_dtype': [np.float64, np.float32]
+        }
+
+class WrappedCatBoostClassifier(CatBoostClassifier, BaseEstimator):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._estimator_type = "classifier"
+
+    def fit(self, X, y, **fit_params):
+        super().fit(X, y, **fit_params)
+        return self
+
+    def __sklearn_tags__(self):
+        return {
+            'non_deterministic': True,
+            'requires_positive_X': False,
+            'requires_positive_y': False,
+            'X_types': ['2darray'],
+            'poor_score': False,
+            'no_validation': False,
+            'multioutput': False,
+            'multioutput_only': False,
+            'allow_nan': False,
+            'stateless': False,
+            'binary_only': False,
+            'requires_fit': True,
+            'requires_y': True,
+            'pairwise': False,
+            'preserves_dtype': [np.float64, np.float32]
+        }
+
+class WrappedRandomForestClassifier(RandomForestClassifier, BaseEstimator):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._estimator_type = "classifier"
+
+    def fit(self, X, y, **fit_params):
+        super().fit(X, y, **fit_params)
+        return self
+
+    @classmethod
+    def _more_tags(cls):
+        return {
+            'non_deterministic': True,
+            'requires_positive_X': False,
+            'requires_positive_y': False,
+            'X_types': ['2darray'],
+            'poor_score': False,
+            'no_validation': False,
+            'multioutput': False,
+            'multioutput_only': False,
+            'allow_nan': True,
+            'stateless': False,
+            'binary_only': False,
+            'requires_fit': True,
+            'requires_y': True,
+            'pairwise': False,
+            'preserves_dtype': [np.float64, np.float32]
+        }
     
 @dataclass
 class SortStrategy(Enum):
@@ -609,17 +726,29 @@ class EnhancedHyperionSort:
         return grid_search.best_estimator_
     
     def _fine_tune_ml_models(self, X_train, y_train):
-        param_grid = {
-            'learning_rate': [0.01, 0.1, 0.2],
-            'max_depth': [3, 5, 7],
-            'n_estimators': [50, 100, 200],
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0]
+        param_distributions = {
+            'learning_rate': uniform(0.001, 0.3),
+            'max_depth': randint(3, 10),
+            'n_estimators': randint(50, 500),
+            'subsample': uniform(0.6, 0.4),
+            'colsample_bytree': uniform(0.6, 0.4),
+            'gamma': uniform(0, 0.5),
+            'reg_alpha': uniform(0, 1),
+            'reg_lambda': uniform(0, 1)
         }
+        
         model = xgb.XGBClassifier(objective='multi:softmax', use_label_encoder=False)
-        grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, scoring='accuracy', verbose=1)
-        grid_search.fit(X_train, y_train)
-        return grid_search.best_estimator_
+        
+        random_search = RandomizedSearchCV(estimator=model, 
+                                        param_distributions=param_distributions, 
+                                        n_iter=50,
+                                        cv=5,
+                                        scoring='accuracy', 
+                                        verbose=1,
+                                        n_jobs=-1)
+        
+        random_search.fit(X_train, y_train)
+        return random_search.best_estimator_
 
     def _incremental_ml_training(self, new_data: List[Dict[str, Any]]):
         for record in new_data:
@@ -741,9 +870,12 @@ class EnhancedHyperionSort:
 
         X_train, X_val, y_train, y_val = train_test_split(data, labels, test_size=0.2, random_state=42)
 
+        smote = SMOTE(random_state=42)
+        X_train, y_train = smote.fit_resample(X_train, y_train)
+
         models = []
 
-        xgb_model = xgb.XGBClassifier(
+        xgb_model = WrappedXGBClassifier(
             objective='multi:softmax',
             num_class=len(set(labels)),
             use_label_encoder=False,
@@ -755,12 +887,13 @@ class EnhancedHyperionSort:
             reg_alpha=0.1,
             reg_lambda=1.0,
             early_stopping_rounds=10,
+            random_state=42,
             n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1
         )
         xgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         models.append(xgb_model)
 
-        lgb_model = lgb.LGBMClassifier(
+        lgb_model = WrappedLGBMClassifier(
             objective='multiclass',
             num_class=len(set(labels)),
             learning_rate=0.1,
@@ -771,39 +904,111 @@ class EnhancedHyperionSort:
             reg_alpha=0.1,
             reg_lambda=1.0,
             n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1,
-            verbose=-1
+            verbose=-1,
+            boosting_type='gbdt',
+            random_state=42
         )
         lgb_model.fit(X_train, y_train, eval_set=[(X_val, y_val)])
         models.append(lgb_model)
 
-        cat_model = CatBoostClassifier(
-            iterations=100,
-            learning_rate=0.1,
-            depth=5,
-            loss_function='MultiClass',
-            verbose=False
-        )
-        cat_model.fit(X_train, y_train, eval_set=(X_val, y_val))
+        print("Training CatBoostClassifier...")
+        catboost_params = {
+            'iterations': 100,
+            'learning_rate': 0.1,
+            'depth': 5,
+            'loss_function': 'MultiClass',
+            'verbose': False,
+            'random_state': 42
+        }
+        print("CatBoost parameters:", catboost_params)
+        cat_model = WrappedCatBoostClassifier(**catboost_params)
+        cat_model.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
         models.append(cat_model)
 
-        rf_model = RandomForestClassifier(
+        rf_model_for_voting = WrappedRandomForestClassifier(
             n_estimators=100,
             max_depth=5,
             random_state=42,
             n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1
         )
-        rf_model.fit(X_train, y_train)
-        models.append(rf_model)
+        rf_model_for_voting.fit(X_train, y_train)
+        models.append(rf_model_for_voting)
+
 
         for model in models:
             y_pred = model.predict(X_val)
             accuracy = accuracy_score(y_val, y_pred)
             self.logger.info(f"Model accuracy: {accuracy:.4f}")
 
+        xgb_model_for_voting = WrappedXGBClassifier(
+            objective='multi:softmax',
+            num_class=len(set(labels)),
+            use_label_encoder=False,
+            learning_rate=0.1,
+            max_depth=5,
+            n_estimators=100,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
+            early_stopping_rounds=10,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1,
+            random_state=42
+        )
+        lgb_model_for_voting = WrappedLGBMClassifier(
+            objective='multiclass',
+            num_class=len(set(labels)),
+            learning_rate=0.1,
+            max_depth=5,
+            n_estimators=100,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1,
+            verbose=-1,
+            boosting_type='gbdt',
+            random_state=42
+        )
+
+        cat_model_for_voting = WrappedCatBoostClassifier(
+            iterations=100,
+            learning_rate=0.1,
+            depth=5,
+            loss_function='MultiClass',
+            verbose=False,
+            random_state=42
+        )
+
+        rf_model_for_voting_v2 = WrappedRandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+            n_jobs=psutil.cpu_count() - 1 if psutil.cpu_count() > 1 else 1
+        )
+
+
+        voting_clf = VotingClassifier(
+            estimators=[
+                ('xgb', xgb_model_for_voting),
+                ('lgb', lgb_model_for_voting),
+                ('cat', cat_model_for_voting),
+                ('rf', rf_model_for_voting_v2)
+            ],
+            voting='hard'
+        )
+
+        voting_clf.fit(X_train, y_train)
+
+        y_pred = voting_clf.predict(X_val)
+        accuracy = accuracy_score(y_val, y_pred)
+        self.logger.info(f"Voting Classifier accuracy: {accuracy:.4f}")
+
+        models = [voting_clf]
+
         self._save_ml_models(models)
-
         return models
-
+         
     def _predict_strategy(self, arr: npt.NDArray) -> SortStrategy:
         if not self.models:
             return self._choose_optimal_strategy(arr)
@@ -3120,13 +3325,42 @@ class EnhancedHyperionSort:
 
         if self.data_type != "number":
             is_nearly_sorted = False
+            
+            if self.data_type == "string":
+                lengths = np.array([len(str(x)) for x in sample])
+                correlation = np.abs(np.corrcoef(lengths[:-1], lengths[1:])[0, 1])
+            else:
+                correlation = 0.0
+            
+            if self.data_type == "string":
+                from collections import Counter
+                char_counts = Counter("".join(sample))
+                total_chars = sum(char_counts.values())
+                probabilities = [count / total_chars for count in char_counts.values()]
+                data_entropy = entropy(probabilities)
+            else:
+                data_entropy = 0.0
+            
+            if self.data_type == "string":
+                unique_count = len(set(sample))
+            else:
+                unique_count = 0
+                
         else:
             is_nearly_sorted = np.sum(np.diff(sample) < 0) < len(sample) * 0.1
+            correlation = np.abs(np.corrcoef(sample[:-1], sample[1:])[0, 1])
+            
+            hist, bin_edges = np.histogram(sample, bins='auto', density=True)
+            data_entropy = entropy(hist)
+            
+            unique_count = len(np.unique(sample))
 
         std_dev = np.std(sample)
         range_size = np.ptp(sample)
         data_skewness = skew(sample)
         data_kurtosis = kurtosis(sample)
+        
+        quantiles = np.percentile(sample, [25, 50, 75])
 
         return {
             "std_dev": std_dev,
@@ -3136,8 +3370,13 @@ class EnhancedHyperionSort:
             "data_skewness": data_skewness,
             "data_kurtosis": data_kurtosis,
             "data_type": self.data_type,
-            "itemsize": arr.itemsize
-
+            "itemsize": arr.itemsize,
+            "correlation": correlation,
+            "entropy": data_entropy,
+            "unique_count": unique_count,
+            "q25": quantiles[0],
+            "q50": quantiles[1],
+            "q75": quantiles[2]
         }
 
 def benchmark(

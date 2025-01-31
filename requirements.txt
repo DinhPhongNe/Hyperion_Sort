@@ -1,6 +1,6 @@
 numpy
 pandas
-scikit-learn
+scikit-learn==1.6.0
 psutil
 lz4
 scipy
@@ -25,3 +25,5 @@ bokeh
 statsmodels
 pandas
 ipython
+smote
+imblearn
